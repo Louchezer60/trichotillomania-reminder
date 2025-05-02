@@ -11,7 +11,7 @@ Webcam Eyes is a Python application designed to detect hair-pulling behavior usi
 - Statistics tracking for daily hair-pulling triggers (not implemented yet)
 
 ## Prerequisites
-- Python 3.8 or higher
+- Python 3.8 or higher (https://www.python.org/downloads/)
 - A webcam (USB or integrated)
 - Speakers or headphones for audio feedback
 
