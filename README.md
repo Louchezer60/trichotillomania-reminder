@@ -2,7 +2,7 @@
 
 Webcam Eyes is a Python application designed to detect hair-pulling behavior using computer vision and provide audio feedback to help users manage trichotillomania. It uses a webcam to track hand and facial landmarks, detecting when a hand approaches the head and potentially engages in hair-pulling motions. The application offers motivational audio feedback, either through text-to-speech (TTS) or pre-recorded stock audio files.
 
-Features
+# Features
 
 
 
@@ -30,7 +30,7 @@ Adjustable parameters for detection cooldown, duration, and movement threshold
 
 Statistics tracking for daily hair-pulling triggers
 
-Prerequisites
+# Prerequisites
 
 
 
@@ -46,7 +46,7 @@ A webcam (USB or integrated)
 
 Speakers or headphones for audio feedback
 
-Dependencies
+# Dependencies
 
 The application relies on the following Python packages. Install them using pip:
 
