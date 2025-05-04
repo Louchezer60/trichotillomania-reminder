@@ -139,6 +139,7 @@ The UI is divided into two main sections:
 The program allows you to modify the camera and detection config
   - Stores detection, audio, and camera settings.
   - Default values:
+    ```
     {
       "detection": {
         "hand_confidence": 0.7,
