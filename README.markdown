@@ -72,7 +72,7 @@ The program is designed to run in a Conda environment with all dependencies.
 
 ### Step 3: Download the Program
 1. Save `tricho-reminder.py` to the path you want `C:\PATH`.
-2. Create a batch file (`lancer_tricho.bat`) in the same directory with the following content:
+2. Create a batch file (`lancer_tricho.bat`) in the same directory or use the one already created in this repository with the following content:
    ```bat
    @echo off
    cd /d "C:\PATH"
@@ -80,7 +80,7 @@ The program is designed to run in a Conda environment with all dependencies.
    call conda activate "name_of_your_env"
    start cmd /k python tricho-reminder.py
    ```
-   This batch file activates the environment and runs the program.
+   This batch file activates the environment and runs the program. Change the "PATH" and "name_of_env" values for it to work!!
 
 ### Step 4: Prepare Resources
 1. Ensure the following directories exist (created automatically on first run):
