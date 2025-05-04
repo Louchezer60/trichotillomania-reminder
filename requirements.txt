@@ -1,0 +1,7 @@
+opencv-python
+mediapipe
+pygame
+gTTS
+Pillow
+sv-ttk
+tkcalendar
