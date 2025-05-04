@@ -67,7 +67,7 @@ The program is designed to run in a Conda environment with all dependencies.
    ```
 4. Install required packages:
    ```bash
-   pip install opencv-python mediapipe pygame gTTS Pillow sv-ttk tkcalendar
+   pip install -r requirements.txt
    ```
 
 ### Step 3: Download the Program
