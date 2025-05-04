@@ -1,666 +1,952 @@
+#!/usr/bin/env python3
+"""
+Hair-pulling detection system - Prevents trichotillomania behaviors
+
+This application uses computer vision to detect when a person is pulling their hair
+and plays audio feedback to help interrupt the behavior, with a unified Tkinter UI
+that scales with window size and includes a tab to monitor daily triggers.
+"""
+
 import os
 import random
 import time
 import threading
+import sys
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Any, Union, Callable
+from dataclasses import dataclass
+import json
+import numpy as np
 import pygame
 import cv2
 import mediapipe as mp
-import argparse
-import json
-import numpy as np
 from gtts import gTTS
-import sys
-from collections import deque
-    
-def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    
-    return os.path.join(base_path, relative_path)
+import tkinter as tk
+from tkinter import ttk, font
+import sv_ttk  # Sun Valley ttk theme
+from PIL import Image, ImageTk
+import queue
+import logging
+from tkcalendar import Calendar
+from datetime import datetime
 
-# Configuration
-AUDIO_FOLDER = os.path.join(resource_path('static'), 'generated_audio')
-STOCK_AUDIO_FOLDER = os.path.join(resource_path('static'), 'stock_audio')
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
-os.makedirs(STOCK_AUDIO_FOLDER, exist_ok=True)
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-_AUDIO_CACHE = None
+# Type definitions
+Frame = np.ndarray
+Landmark = Any  # mp.solutions landmarks
 
-def get_audio_files():
-    global _AUDIO_CACHE
-    if _AUDIO_CACHE is None:
-        _AUDIO_CACHE = [f for f in os.listdir(STOCK_AUDIO_FOLDER)
-                       if f.endswith(('.mp3', '.wav'))]
-    return _AUDIO_CACHE
 
-MOTIVATIONAL_PHRASES = [
-    "You're stronger than this urge. You've got this!",
-    "Your hands are capable of great things - let them stay free.",
-    "Every moment you resist makes you stronger.",
-    "You're in control. Take a deep breath and release the tension.",
-    "Your hair grows beautiful when you let it be.",
-    "This temporary urge will pass. Stay strong!",
-    "You're worth more than a moment of compulsion.",
-    "Picture yourself proud for resisting. You can do it!",
-    "Take a deep breath. You can do this.",
-    "Keep your hands busy. Maybe try a stress ball.",
-    "Remember, you're in control. Let's stay strong.",
-    "One moment at a time. You've got this.",
-    "Notice the urge, but don't act on it.",
-    "Your hair thanks you for your strength.",
-    "Let's redirect your focus to something else.",
-    "You're stronger than the urge. Stay calm.",
-    "Gentle reminder: Keep those hands away.",
-    "Every moment you resist makes you stronger.",
-    "You're doing great! Keep up the good work.",
-    "Let's practice some mindfulness together.",
-    "Maybe try massaging your scalp gently instead.",
-    "Remember how proud you'll feel for resisting.",
-    "This moment will pass. Stay resilient."
-]
+@dataclass
+class Config:
+    """Application configuration settings."""
+    detection: Dict[str, Any]
+    audio: Dict[str, Any]
+    camera: Dict[str, Any]
 
-# Global state
-playback_active = False
-current_interval = 300
-control_event = threading.Event()
-remaining_time = current_interval
-pygame.mixer.init()
 
-# Détection de gestes
-mp_hands = mp.solutions.hands
-mp_face_mesh = mp.solutions.face_mesh
-hair_trigger_cooldown = 3
-last_hair_trigger = 0
-hair_lock = threading.Lock()
+@dataclass
+class TempSettings:
+    """Temporary settings used during configuration."""
+    trigger_cooldown: int
+    required_duration: float
+    pull_threshold: int
 
-# Audio mode configuration
-USE_TTS = None  # Will be set during runtime
 
-CONFIG = {
-    "detection": {
-        "hand_confidence": 0.7,
-        "face_confidence": 0.5,
-        "trigger_cooldown": 3,
-        "required_duration": 0.75,
-        "pull_threshold": 1,
-        "max_head_distance": 150
-    },
-    "audio": {
-        "volume": 1.0,
-        "language": "fr"
-    },
-    "camera": {
-        "device": 0,
-        "flip": True
-    }
-}
-
-# Add after CONFIG definition
-temp_settings = {}  # Will store temporary values while adjusting settings
-
-class DetectionMode:
-    STRICT = "strict"      # Très sensible, détecte tout mouvement
-    NORMAL = "normal"      # Mode par défaut
-    RELAXED = "relaxed"    # Plus tolérant
+class ResourceManager:
+    """Manages access to application resources."""
     
     @staticmethod
-    def apply_mode(mode, config):
+    def get_resource_path(relative_path: str) -> str:
+        """Get absolute path to resource, works for dev and for PyInstaller."""
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        
+        return os.path.join(base_path, relative_path)
+    
+    @staticmethod
+    def ensure_directories(dirs: List[str]) -> None:
+        """Ensure all directories in the list exist."""
+        for directory in dirs:
+            os.makedirs(directory, exist_ok=True)
+
+
+class DetectionMode:
+    """Detection sensitivity modes."""
+    STRICT = "strict"
+    NORMAL = "normal"
+    RELAXED = "relaxed"
+    
+    @staticmethod
+    def apply_mode(mode: str, config: Config) -> None:
+        """Apply detection mode settings to config."""
         if mode == DetectionMode.STRICT:
-            config['detection']['required_duration'] = 1.0
-            config['detection']['pull_threshold'] = 1
+            config.detection['required_duration'] = 1.0
+            config.detection['pull_threshold'] = 1
         elif mode == DetectionMode.RELAXED:
-            config['detection']['required_duration'] = 2.0
-            config['detection']['pull_threshold'] = 2
+            config.detection['required_duration'] = 2.0
+            config.detection['pull_threshold'] = 2
+
 
 class PullingStats:
+    """Tracks statistics on hair-pulling incidents."""
+    
     def __init__(self):
-        self.triggers = []
-        self.daily_stats = {}
+        self.triggers: List[float] = []
+        self.daily_stats: Dict[str, int] = {}
         self.load_stats()
     
-    def add_trigger(self):
+    def add_trigger(self) -> None:
+        """Record a new hair-pulling trigger event."""
         now = time.time()
         self.triggers.append(now)
         self.update_daily_stats()
         self.save_stats()
     
-    def get_daily_report(self):
+    def update_daily_stats(self) -> None:
+        """Update daily statistics based on triggers."""
+        today = time.strftime("%Y-%m-%d")
+        if today not in self.daily_stats:
+            self.daily_stats[today] = 0
+        self.daily_stats[today] += 1
+    
+    def get_daily_report(self) -> str:
+        """Get a report of today's triggers."""
         today = time.strftime("%Y-%m-%d")
         return f"Today's triggers: {self.daily_stats.get(today, 0)}"
-
-def get_audio_files(folder):
-    return [f for f in os.listdir(folder) if f.endswith(('.mp3', '.wav'))]
-
-def generate_tts(phrase, filename):
-    filepath = os.path.join(AUDIO_FOLDER, filename)
-    if not os.path.exists(filepath):
-        tts = gTTS(text=phrase, lang='en')
-        tts.save(filepath)
-    return filepath
-
-def play_audio(audio_file):
-    try:
-        pygame.mixer.music.unload()  # Unload any previously loaded music
-        pygame.mixer.music.load(audio_file)
-        pygame.mixer.music.play()
-        
-        # Wait for the audio to finish or be interrupted
-        while pygame.mixer.music.get_busy() and not control_event.is_set():
-            pygame.time.Clock().tick(10)  # Control the loop rate
-            
-        # Ensure the music stops and unloads
-        pygame.mixer.music.stop()
-        pygame.mixer.music.unload()
-        
-    except Exception as e:
-        print(f"Erreur de lecture audio: {e}")
-        # Try to reinitialize mixer if there's an error
+    
+    def load_stats(self) -> None:
+        """Load stats from storage."""
         try:
-            pygame.mixer.quit()
-            pygame.mixer.init()
-        except:
+            with open('hair_stats.json', 'r') as f:
+                data = json.load(f)
+                self.daily_stats = data.get('daily_stats', {})
+        except (FileNotFoundError, json.JSONDecodeError):
             pass
-
-def play_message():
-    """Play audio from stock folder or generate TTS based on user choice"""
-    global USE_TTS  # Move global declaration to the top of the function
     
-    if USE_TTS:
-        # Use TTS
-        phrase = random.choice(MOTIVATIONAL_PHRASES)
-        filename = f"hair_touch_{int(time.time())}.mp3"
-        generate_tts(phrase, filename)
-        play_audio(os.path.join(AUDIO_FOLDER, filename))
-    else:
-        # Use stock audio files
-        stock_audio_files = [f for f in os.listdir(STOCK_AUDIO_FOLDER) 
-                           if f.endswith(('.mp3', '.wav'))]
-        if stock_audio_files:
-            audio_file = os.path.join(STOCK_AUDIO_FOLDER, random.choice(stock_audio_files))
-            play_audio(audio_file)
-        else:
-            # Fallback to TTS if stock folder became empty
-            print("\nWarning: Stock audio folder is empty, falling back to TTS")
-            USE_TTS = True
-            play_message()
+    def save_stats(self) -> None:
+        """Save stats to storage."""
+        data = {'daily_stats': self.daily_stats}
+        with open('hair_stats.json', 'w') as f:
+            json.dump(data, f)
 
 
-def adjust_exposure(frame):
-    # Conversion en LAB pour travailler sur la luminance
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+class AudioManager:
+    """Manages audio playback and TTS generation."""
     
-    # CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    l = clahe.apply(l)
+    MOTIVATIONAL_PHRASES = [
+        "You're stronger than this urge. You've got this!",
+        "Your hands are capable of great things - let them stay free.",
+        "Every moment you resist makes you stronger.",
+        "You're in control. Take a deep breath and release the tension.",
+        "Your hair grows beautiful when you let it be.",
+        "This temporary urge will pass. Stay strong!",
+        "You're worth more than a moment of compulsion.",
+        "Picture yourself proud for resisting. You can do it!",
+        "Take a deep breath. You can do this.",
+        "Keep your hands busy. Maybe try a stress ball.",
+        "Remember, you're in control. Let's stay strong.",
+        "One moment at a time. You've got this.",
+        "Notice the urge, but don't act on it.",
+        "Your hair thanks you for your strength.",
+        "Let's redirect your focus to something else.",
+        "You're stronger than the urge. Stay calm.",
+        "Gentle reminder: Keep those hands away.",
+        "Every moment you resist makes you stronger.",
+        "You're doing great! Keep up the good work.",
+        "Let's practice some mindfulness together.",
+        "Maybe try massaging your scalp gently instead.",
+        "Remember how proud you'll feel for resisting.",
+        "This moment will pass. Stay resilient."
+    ]
     
-    # Fusionner les canaux et reconvertir en BGR
-    processed_lab = cv2.merge((l, a, b))
-    return cv2.cvtColor(processed_lab, cv2.COLOR_LAB2BGR)
-
-
-def detect_hair_touch():
-    global last_hair_trigger
-    hands = mp_hands.Hands(
-        min_detection_confidence=0.7,
-        max_num_hands=1,  # On ne suit qu'une seule main
-        model_complexity=0,  # Utiliser le modèle le plus léger
-        static_image_mode=False
-    )
+    def __init__(self, audio_folder: str, stock_audio_folder: str, use_tts: bool = False):
+        self.audio_folder = audio_folder
+        self.stock_audio_folder = stock_audio_folder
+        self.use_tts = use_tts
+        self.control_event = threading.Event()
+        pygame.mixer.init()
+        self._audio_files_cache = None
     
-    face_mesh = mp_face_mesh.FaceMesh(
-        min_detection_confidence=0.5,
-        max_num_faces=1,  # On ne suit qu'un seul visage
-        refine_landmarks=False,  # Désactiver le raffinement des landmarks
-        static_image_mode=False,
-        min_tracking_confidence=0.5
-    )
-    mp_drawing = mp.solutions.drawing_utils
-    drawing_spec_hands = mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2)
-    drawing_spec_face = mp_drawing.DrawingSpec(color=(0,0,255), thickness=1, circle_radius=1)
+    def get_audio_files(self) -> List[str]:
+        if self._audio_files_cache is None:
+            self._audio_files_cache = [
+                f for f in os.listdir(self.stock_audio_folder)
+                if f.endswith(('.mp3', '.wav'))
+            ]
+        return self._audio_files_cache
     
-    # Try different camera indices
-    camera_index = 0
-    cap = cv2.VideoCapture(camera_index)
-    # Essayer de régler la FPS matériellement
-    cap.set(cv2.CAP_PROP_FPS, 10)
-    # Ajouter dans la section d'initialisation de la caméra (après cap = cv2.VideoCapture(camera_index))
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Désactiver l'exposition automatique
-    cap.set(cv2.CAP_PROP_EXPOSURE, -4)  # Ajuster selon la caméra (-1 à -8 typiquement)
-    cap.set(cv2.CAP_PROP_AUTO_WB, 0)  # Désactiver la balance des blancs automatique
-    
-    while not cap.isOpened() and camera_index < 3:
-        print(f"Trying camera index {camera_index}...")
-        camera_index += 1
-        cap = cv2.VideoCapture(camera_index)
-    
-    if not cap.isOpened():
-        print("Erreur: Impossible d'ouvrir la caméra")
-        return
-    else:
-        print(f"Caméra trouvée à l'index {camera_index}")
-    
-    # Test the camera feed
-    success, test_frame = cap.read()
-    if success:
-        h, w, _ = test_frame.shape
-        print(f"Résolution de la caméra: {w}x{h}")
-    
-    # Define eye landmarks (using right and left eyes)
-    RIGHT_EYE = 159  # Right eye outer corner
-    LEFT_EYE = 386   # Left eye outer corner
-
-  
-    # Add variables to track hand movement and time
-    last_hand_y = None
-    pull_threshold = 1
-    movement_window = []
-    window_size = 5
-    
-    # Add time tracking variables
-    hand_near_head_start = None
-    max_head_distance = 150  # pixels - adjust this value based on your needs
-    
-    # Add more detection points
-    FOREHEAD = 10  # Forehead landmark
-    CROWN = 152    # Top of head landmark
-    TEMPLES = [447, 227]  # Temple landmarks
-    
-    last_time = time.time()
-    
-    settings_window_active = False
-    settings_window_exists = False
-    
-    # After camera initialization, set a fixed window size
-    cv2.namedWindow('Gesture Tracking', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Gesture Tracking', 1280, 720)  # Adjust size as needed
-    
-    # Réduire la résolution de la caméra
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    
-    # Limiter le FPS
-    cap.set(cv2.CAP_PROP_FPS, 15)
-    
-    # Ajouter une variable pour le frame skipping
-    frame_counter = 0
-    process_every_n_frames = 3  # Traiter une frame sur 2
-    
-# Add reference hand size calculation
-    def get_hand_size(hand_landmarks, frame_width, frame_height):
-    # Optimized: Vectorized calculation with NumPy
-        landmarks_np = np.array([(lm.x * frame_width, lm.y * frame_height) for lm in hand_landmarks.landmark])
-        x_coords = landmarks_np[:, 0]
-        y_coords = landmarks_np[:, 1]
-        return (np.max(x_coords) - np.min(x_coords)) * (np.max(y_coords) - np.min(y_coords))
-
-    def get_head_size(face_landmarks, frame_width, frame_height):
-        # Optimized: Vectorized calculation
-        landmarks_np = np.array([(lm.x * frame_width, lm.y * frame_height) for lm in face_landmarks.landmark])
-        x_coords = landmarks_np[:, 0]
-        y_coords = landmarks_np[:, 1]
-        return (np.max(x_coords) - np.min(x_coords)) * (np.max(y_coords) - np.min(y_coords))
-    
-    while True:
-        success, frame = cap.read()
-        if not success:
-            continue
-        
-        current_time = time.time()
-            
-        # Vérifier la surexposition
-        if is_overexposed(frame):
-            # Ajustement dynamique de l'exposition
-            current_exposure = cap.get(cv2.CAP_PROP_EXPOSURE)
-            cap.set(cv2.CAP_PROP_EXPOSURE, current_exposure * 0.9)
-            cv2.putText(frame, "Overexposure detected!", (20, 60), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-            
-        # Skip frames pour réduire la charge CPU
-        if frame_counter % process_every_n_frames != 0:
-            frame_counter += 1
-            continue
-            
-        # Flip l'image AVANT le traitement
-        frame = cv2.flip(frame, 1)
-        frame = adjust_exposure(frame)  # Appliquer le prétraitement
-            
-        # Réduire la taille de l'image pour le traitement
-        frame_small = cv2.resize(frame, (320, 240))
-        
-        # Faire le traitement sur l'image réduite
-        image = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
-        
-        try:
-                # Détections sur l'image réduite
-                hand_results = hands.process(image)
-                if hand_results.multi_hand_landmarks:
-                    face_results.multi_face_landmarks  # Only process hands if face detected
-                else:
-                    face_results = None
-
-                face_results = face_mesh.process(image)
-                
-                # Utiliser directement frame comme display_frame puisqu'il est déjà flippé
-                display_frame = frame
-                
-                # Ne dessiner les landmarks que si nécessaire
-                if settings_window_active:
-                    if hand_results.multi_hand_landmarks:
-                        for hand_landmarks in hand_results.multi_hand_landmarks:
-                            mp_drawing.draw_landmarks(display_frame, hand_landmarks, mp_hands.HAND_CONNECTIONS, drawing_spec_hands)
-                    
-                    if face_results.multi_face_landmarks:
-                        for face_landmarks in face_results.multi_face_landmarks:
-                            mp_drawing.draw_landmarks(display_frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS, drawing_spec_face)
-                
-                if hand_results.multi_hand_landmarks and face_results.multi_face_landmarks:
-                    for hand_landmarks in hand_results.multi_hand_landmarks:
-                        index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-                        
-                        for face_landmarks in face_results.multi_face_landmarks:
-                            right_eye = face_landmarks.landmark[RIGHT_EYE]
-                            left_eye = face_landmarks.landmark[LEFT_EYE]
-                            
-                            h, w, _ = frame.shape
-                            index_y = index_tip.y * h
-                            index_x = index_tip.x * w
-                            eye_level = min(right_eye.y * h, left_eye.y * h)
-                            eye_x = (right_eye.x + left_eye.x) * w / 2
-                            
-                            # Calculate distance from hand to head
-                            distance_to_head = abs(index_x - eye_x)
-                            
-                            # Calculate sizes
-                            hand_size = get_hand_size(hand_landmarks, w, h)
-                            head_size = get_head_size(face_landmarks, w, h)
-                            
-                            # Calculate size ratio (hand should be roughly 1/4 to 1/2 of head size when at same depth)
-                            size_ratio = hand_size / head_size
-                            
-                            # Check if hand is at similar depth as head
-                            is_at_same_depth = 0.15 < size_ratio < 0.6  # Adjust these thresholds as needed
-                            
-                            # Add depth check to detection condition
-                            if index_y < eye_level and distance_to_head < max_head_distance and is_at_same_depth:
-                                if hand_near_head_start is None:
-                                    hand_near_head_start = time.time()
-                                
-                                # Check if hand has been near head long enough
-                                if (time.time() - hand_near_head_start) >= CONFIG['detection']['required_duration']:
-                                    # Now check for pulling motion
-                                    if last_hand_y is not None:
-                                        movement = index_y - last_hand_y
-                                        movement_window.append(movement)
-                                        if len(movement_window) > window_size:
-                                            movement_window.pop(0)
-                                        
-                                        total_movement = sum(movement_window)
-                                        
-                                        if total_movement > pull_threshold:
-                                            with hair_lock:
-                                                if time.time() - last_hair_trigger > hair_trigger_cooldown:
-                                                    last_hair_trigger = time.time()
-                                                    play_message()  # Replace the TTS code with this call
-                                                    print(f"Détection de traction cheveux à {time.ctime()}")
-                                                    movement_window.clear()
-                                                    hand_near_head_start = None  # Reset timer
-                                
-                                # Draw visual feedback
-                                if hand_near_head_start is not None:
-                                    if (current_time - hand_near_head_start) >= CONFIG['detection']['required_duration']:
-                                        # Draw progress bar
-                                        progress = int((current_time - hand_near_head_start / CONFIG['detection']['required_duration']) * w)
-                                        cv2.line(display_frame, (0, 30), (progress, 30), (0, 255, 0), 5)
-                                
-                                last_hand_y = index_y
-                                # Draw a line at eye level for visualization
-                                cv2.line(display_frame, (0, int(eye_level)), (w, int(eye_level)), (0, 255, 255), 2)
-                            else:
-                                # Reset when hand moves away from head
-                                hand_near_head_start = None
-                                last_hand_y = None
-                                movement_window.clear()
-                            # Optional: Display depth information
-                            if settings_window_active:  # Only show when settings window is open
-                                cv2.putText(display_frame, f"Depth ratio: {size_ratio:.2f}", 
-                                        (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 
-                                        (0,255,0) if is_at_same_depth else (0,0,255), 2)
-        except Exception as e:
-            print(f"Erreur de traitement: {str(e)}")
-            continue
-        
-        # Calcul et affichage FPS
-        fps = 1 / (current_time - last_time + 1e-6)  # Éviter division par zéro
-        last_time = current_time
-        cv2.putText(display_frame, f"FPS: {int(fps)}", (10,90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-        
-        # Mettre à jour l'affichage moins souvent
-        if frame_counter % 3 == 0:  # Update display every 3 frames
-            frame = add_config_interface(display_frame)
-            cv2.imshow('Gesture Tracking', display_frame)
-        
-        # Check if settings window was closed by user (X button)
-        if settings_window_active and settings_window_exists:
+    def generate_tts(self, phrase: str, filename: str) -> Optional[str]:
+        filepath = os.path.join(self.audio_folder, filename)
+        if os.path.exists(filepath):
+            return filepath
+        def _generate_in_thread():
             try:
-                # Try to get window property, will fail if window was closed
-                prop = cv2.getWindowProperty('Settings', cv2.WND_PROP_VISIBLE)
-                if prop < 0:  # Window was closed
-                    settings_window_active = False
-                    settings_window_exists = False
-                    cv2.waitKey(1)  # Process window events
-            except:
-                settings_window_active = False
-                settings_window_exists = False
-                cv2.waitKey(1)
-        
-        key = cv2.waitKey(1) & 0xFF
-        
-        # Handle key presses
-        if key == ord('q'):
-            break
-        elif key == ord('s'):
-            settings_window_active = not settings_window_active
-            if settings_window_active:
-                if not settings_window_exists:
-                    show_settings()
-                    settings_window_exists = True
+                tts = gTTS(text=phrase, lang='en')
+                tts.save(filepath)
+                self.play_audio(filepath)
+            except Exception as e:
+                print(f"Error generating TTS: {e}")
+        tts_thread = threading.Thread(target=_generate_in_thread)
+        tts_thread.daemon = True
+        tts_thread.start()
+        return None
+    
+    def play_audio(self, audio_file: str) -> None:
+        def _play_in_thread():
+            try:
+                pygame.mixer.music.unload()
+                pygame.mixer.music.load(audio_file)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy() and not self.control_event.is_set():
+                    pygame.time.Clock().tick(10)
+                pygame.mixer.music.stop()
+                pygame.mixer.music.unload()
+            except Exception as e:
+                print(f"Audio playback error: {e}")
+                try:
+                    pygame.mixer.quit()
+                    pygame.mixer.init()
+                except Exception:
+                    pass
+        audio_thread = threading.Thread(target=_play_in_thread)
+        audio_thread.daemon = True
+        audio_thread.start()
+    
+    def play_message(self) -> None:
+        if self.use_tts:
+            phrase = random.choice(self.MOTIVATIONAL_PHRASES)
+            filename = f"hair_touch_{int(time.time())}.mp3"
+            file_path = self.generate_tts(phrase, filename)
+            if file_path:
+                self.play_audio(file_path)
+        else:
+            stock_audio_files = self.get_audio_files()
+            if stock_audio_files:
+                audio_file = os.path.join(self.stock_audio_folder, random.choice(stock_audio_files))
+                self.play_audio(audio_file)
             else:
-                if settings_window_exists:
-                    try:
-                        cv2.destroyWindow('Settings')
-                        cv.waitKey(1)
-                    except:
-                        pass
-                    settings_window_exists = False
-        elif key == ord('a') and settings_window_active:
-            # Apply settings changes from temp_settings to CONFIG
-            CONFIG['detection']['trigger_cooldown'] = temp_settings['trigger_cooldown']
-            CONFIG['detection']['required_duration'] = temp_settings['required_duration']
-            CONFIG['detection']['pull_threshold'] = temp_settings['pull_threshold']
-            print("\nParamètres mis à jour:")
-            print(f"Cooldown: {CONFIG['detection']['trigger_cooldown']}s")
-            print(f"Duration: {CONFIG['detection']['required_duration']}s")
-            print(f"Threshold: {CONFIG['detection']['pull_threshold']}")
-            save_config()
-        elif key == ord('r'):
-            # Reset to default settings
-            CONFIG['detection'] = {
-                "hand_confidence": 0.7,
-                "face_confidence": 0.5,
-                "trigger_cooldown": 3,
-                "required_duration": 1,
-                "pull_threshold": 1,
-                "max_head_distance": 150
-            }
-            if settings_window_active and settings_window_exists:
-                show_settings()  # This will also reset temp_settings
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-def add_config_interface(frame):
-    """Add configuration controls to the video frame"""
-    h, w, _ = frame.shape
-    # Larger text size and thickness
-    cv2.putText(frame, "Controls:", (20, h-100), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
-    cv2.putText(frame, "Q: Quit | S: Settings | R: Reset", (20, h-60), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
+                print("\nWarning: Stock audio folder is empty, falling back to TTS")
+                self.use_tts = True
+                self.play_message()
     
-    # Afficher le temps actuel
-    cv2.putText(frame, f"Temps detection: {CONFIG['detection']['required_duration']:.1f}s", 
-                (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
-    return frame
+    def cleanup(self) -> None:
+        self.control_event.set()
+        pygame.mixer.quit()
 
-def update_cooldown(value):
-    """Callback for cooldown trackbar"""
-    CONFIG['detection']['trigger_cooldown'] = value
 
-def update_duration(value):
-    """Callback for duration trackbar"""
-    CONFIG['detection']['required_duration'] = value / 10.0  # Convert back to seconds
-
-def show_settings():
-    """Show settings window with trackbars"""
-    global temp_settings
-    
-    # Create temporary settings for modifications
-    temp_settings = {
-        'required_duration': CONFIG['detection']['required_duration'],
-        'trigger_cooldown': CONFIG['detection']['trigger_cooldown'],
-        'pull_threshold': CONFIG['detection']['pull_threshold']
+class ConfigManager:
+    DEFAULT_CONFIG = {
+        "detection": {
+            "hand_confidence": 0.7,
+            "face_confidence": 0.5,
+            "trigger_cooldown": 3,
+            "required_duration": 0.75,
+            "pull_threshold": 1,
+            "max_head_distance": 150
+        },
+        "audio": {"volume": 1.0, "language": "en"},
+        "camera": {"device": 0, "flip": True}
     }
     
-    cv2.namedWindow('Settings', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Settings', 1000, 400)
+    def __init__(self, config_file: str = 'config.json'):
+        self.config_file = config_file
+        self.config = self.load_config()
     
-    # Create a blank image for the settings window
-    settings_img = np.zeros((400, 1000, 3), dtype=np.uint8)
+    def load_config(self) -> Config:
+        try:
+            with open(self.config_file, 'r') as f:
+                config_data = json.load(f)
+                return Config(**config_data)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return Config(**self.DEFAULT_CONFIG)
     
-    # Add title
-    cv2.putText(settings_img, "Settings", (20, 40), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+    def save_config(self) -> None:
+        with open(self.config_file, 'w') as f:
+            json.dump(self.config.__dict__, f, indent=4)
     
-    # Add labels for each setting with descriptions
-    y_pos = 80
-    spacing = 70
-    
-    # Cooldown setting
-    cv2.putText(settings_img, "Trigger Cooldown: Temps minimum entre alertes (secondes)", 
-                (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-    cv2.createTrackbar('Cooldown', 'Settings', 
-                      temp_settings['trigger_cooldown'], 10,
-                      lambda x: temp_settings.__setitem__('trigger_cooldown', x))
-    
-    # Duration setting
-    y_pos += spacing
-    cv2.putText(settings_img, "Required Duration: Temps de detection necessaire (secondes)", 
-                (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-    cv2.createTrackbar('Duration', 'Settings', 
-                      int(temp_settings['required_duration']*10), 50,
-                      lambda x: temp_settings.__setitem__('required_duration', x/10.0))
-    
-    # Threshold setting
-    y_pos += spacing
-    cv2.putText(settings_img, "Pull Threshold: Sensibilite de detection du mouvement", 
-                (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-    cv2.createTrackbar('Threshold', 'Settings',
-                      temp_settings['pull_threshold'], 30, 
-                      lambda x: temp_settings.__setitem__('pull_threshold', x))
-    
-    # Add apply button instructions
-    y_pos += spacing + 30
-    cv2.putText(settings_img, "Appuyer sur 'A' pour appliquer les changements", 
-                (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-    
-    # Show the settings window
-    cv2.imshow('Settings', settings_img)
+    def reset_to_default(self) -> None:
+        self.config = Config(**self.DEFAULT_CONFIG)
+        self.save_config()
 
-def load_config():
-    try:
-        with open('config.json', 'r') as f:
-            return json.load(f)
-    except:
-        return CONFIG
 
-def save_config():
-    with open('config.json', 'w') as f:
-        json.dump(CONFIG, f, indent=4)
-
-class DetectionError(Exception):
-    pass
-
-def safe_detection():
-    try:
-        detect_hair_touch()
-    except cv2.error as e:
-        print(f"Erreur caméra: {e}")
-        time.sleep(5)
-        return safe_detection()
-    except Exception as e:
-        print(f"Erreur inattendue: {e}")
-        return False
-
-def list_available_cameras():
-    """Return the first available camera index."""
-    for index in range(10):  # Limit to a reasonable number of checks
-        cap = cv2.VideoCapture(index)
-        if cap.read()[0]:
-            cap.release()
-            return [index]
-    return []
-
-# Add this before camera initialization
-available_cameras = list_available_cameras()
-print(f"Caméras disponibles: {available_cameras}")
-if not available_cameras:
-    print("No cameras found. Exiting.")
-    exit()
-
-# Ajouter cette fonction de vérification
-def is_overexposed(frame, threshold=220):
-    small_frame = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
-    gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-    return np.mean(gray) > threshold
-
-if __name__ == '__main__':
-    print("\nHair-pulling detection starting...")
-    print("-----------------------------------------------------")
+class GestureDetector:
+    RIGHT_EYE = 159
+    LEFT_EYE = 386
+    FOREHEAD = 10
+    CROWN = 152
+    TEMPLES = [447, 227]
     
-    # Check for audio files
-    stock_audio_files = [f for f in os.listdir(STOCK_AUDIO_FOLDER) 
-                        if f.endswith(('.mp3', '.wav'))]
+    def __init__(self, config: Config):
+        self.config = config
+        self.mp_hands = mp.solutions.hands
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.hands = self.mp_hands.Hands(
+            min_detection_confidence=config.detection['hand_confidence'],
+            max_num_hands=1,
+            model_complexity=0,
+            static_image_mode=False
+        )
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            min_detection_confidence=config.detection['face_confidence'],
+            max_num_faces=1,
+            refine_landmarks=False,
+            static_image_mode=False,
+            min_tracking_confidence=0.5
+        )
+        self.drawing_spec_hands = self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2)
+        self.drawing_spec_face = self.mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1, circle_radius=1)
     
-    if stock_audio_files:
-        print(f"\nFound {len(stock_audio_files)} audio files in {STOCK_AUDIO_FOLDER}")
-        print("\nChoose your audio feedback mode:")
-        print("1. Text-to-speech")
-        print("2. Stock audio files")
+    def process_frame(self, frame: Frame) -> Tuple[Any, Any]:
+        hand_results = self.hands.process(frame)
+        face_results = self.face_mesh.process(frame)
+        return hand_results, face_results
+    
+    def draw_landmarks(self, frame: Frame, hand_results: Any, face_results: Any) -> Frame:
+        if hand_results.multi_hand_landmarks:
+            for hand_landmarks in hand_results.multi_hand_landmarks:
+                self.mp_drawing.draw_landmarks(
+                    frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS,
+                    self.drawing_spec_hands
+                )
+        if face_results and face_results.multi_face_landmarks:
+            for face_landmarks in face_results.multi_face_landmarks:
+                self.mp_drawing.draw_landmarks(
+                    frame, face_landmarks, self.mp_face_mesh.FACEMESH_CONTOURS,
+                    self.drawing_spec_face
+                )
+        return frame
+    
+    @staticmethod
+    def get_hand_size(hand_landmarks: Landmark, frame_width: int, frame_height: int) -> float:
+        landmarks_np = np.array([
+            (lm.x * frame_width, lm.y * frame_height) 
+            for lm in hand_landmarks.landmark
+        ])
+        x_coords = landmarks_np[:, 0]
+        y_coords = landmarks_np[:, 1]
+        return (np.max(x_coords) - np.min(x_coords)) * (np.max(y_coords) - np.min(y_coords))
+    
+    @staticmethod
+    def get_head_size(face_landmarks: Landmark, frame_width: int, frame_height: int) -> float:
+        landmarks_np = np.array([
+            (lm.x * frame_width, lm.y * frame_height) 
+            for lm in face_landmarks.landmark
+        ])
+        x_coords = landmarks_np[:, 0]
+        y_coords = landmarks_np[:, 1]
+        return (np.max(x_coords) - np.min(x_coords)) * (np.max(y_coords) - np.min(y_coords))
+    
+    def cleanup(self) -> None:
+        self.hands.close()
+        self.face_mesh.close()
+
+
+class ImageProcessor:
+    @staticmethod
+    def adjust_exposure(frame: Frame) -> Frame:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        processed_lab = cv2.merge((l, a, b))
+        return cv2.cvtColor(processed_lab, cv2.COLOR_LAB2BGR)
+    
+    @staticmethod
+    def is_overexposed(frame: Frame, threshold: int = 220) -> bool:
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        return np.mean(gray) > threshold
+
+
+class CameraManager:
+    def __init__(self, device_id: int = 0, flip_horizontal: bool = True):
+        self.device_id = device_id
+        self.flip_horizontal = flip_horizontal
+        self.cap = None
+    
+    def open(self) -> bool:
+        logging.debug(f"Attempting to open camera at index {self.device_id}")
+        self.cap = cv2.VideoCapture(self.device_id)
+        camera_index = self.device_id
+        while not self.cap.isOpened() and camera_index < 10:
+            logging.debug(f"Trying camera index {camera_index}...")
+            camera_index += 1
+            self.cap = cv2.VideoCapture(camera_index)
+        if not self.cap.isOpened():
+            logging.error("Error: Could not open camera")
+            print("Error: Could not open camera")
+            return False
+        logging.info(f"Camera found at index {camera_index}")
+        print(f"Camera found at index {camera_index}")
+        self._configure_camera()
+        return True
+    
+    def _configure_camera(self) -> None:
+        logging.debug("Configuring camera settings")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 15)
+        try:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, -4)
+            self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+            logging.debug("Camera exposure settings applied")
+        except Exception as e:
+            logging.warning(f"Could not set camera exposure settings: {e}")
+            print("Warning: Could not set camera exposure settings")
+    
+    def read_frame(self) -> Tuple[bool, Optional[Frame]]:
+        if not self.cap or not self.cap.isOpened():
+            logging.error("Camera not initialized or not opened")
+            return False, None
+        try:
+            success, frame = self.cap.read()
+            if not success:
+                logging.error("Failed to read frame from camera")
+                return False, None
+            if self.flip_horizontal:
+                frame = cv2.flip(frame, 1)
+            return True, frame
+        except Exception as e:
+            logging.error(f"Error reading frame: {e}")
+            return False, None
+    
+    def adjust_exposure(self, is_overexposed: bool) -> None:
+        if is_overexposed:
+            try:
+                current_exposure = self.cap.get(cv2.CAP_PROP_EXPOSURE)
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, current_exposure * 0.9)
+                logging.debug("Exposure adjusted due to overexposure")
+            except Exception as e:
+                logging.warning(f"Failed to adjust exposure: {e}")
+    
+    def close(self) -> None:
+        if self.cap:
+            try:
+                self.cap.release()
+                logging.debug("Camera released")
+            except Exception as e:
+                logging.error(f"Error releasing camera: {e}")
+            self.cap = None
+
+
+class UIManager:
+    """Manages the application's unified Tkinter UI with scalable elements."""
+    
+    def __init__(self, config: Config, stats: PullingStats, on_quit: Callable, on_reset: Callable):
+        """Initialize UI manager with Tkinter window."""
+        self.config = config
+        self.stats = stats
+        self.on_quit = on_quit
+        self.on_reset = on_reset
+        self.root = None
+        self.video_frame = None
+        self.video_label = None
+        self.photo = None
+        self.temp_settings = TempSettings(
+            trigger_cooldown=config.detection['trigger_cooldown'],
+            required_duration=config.detection['required_duration'],
+            pull_threshold=config.detection['pull_threshold']
+        )
+        self.frame_queue = queue.Queue(maxsize=1)
+        self.running = False
+        self.video_width = 640
+        self.video_height = 480
+        self.title_font = None
+        self.label_font = None
+        self.status_label = None
+        self.fps_label = None
+        self.depth_label = None
+        self.calendar = None
+        self.trigger_label = None
+    
+    def initialize_ui(self) -> None:
+        """Initialize Tkinter window with video feed, settings, and triggers tabs."""
+        self.root = tk.Tk()
+        self.root.title("Trichotillomania-Reminder : Hair-Pulling Detection System")
+        self.root.geometry("1280x720")
+        self.root.resizable(True, True)
         
-        while True:
-            choice = input("\nEnter your choice (1-2) [default: 2]: ").strip()
-            if choice == "1":
-                USE_TTS = True
-                print("\nUsing text-to-speech feedback")
-                break
-            elif choice == "2" or choice == "":
-                USE_TTS = False
-                print("\nUsing stock audio files for feedback")
-                break
+        # Set custom window icon
+        try:
+            icon_path = ResourceManager.get_resource_path("icon.ico")
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
             else:
-                print("Invalid choice. Please enter 1 or 2")
-    else:
-        print("\nNo audio files found in stock folder")
-        print("Using text-to-speech feedback")
-        USE_TTS = True
+                logging.warning(f"Icon file not found at: {icon_path}")
+        except Exception as e:
+            logging.error(f"Error setting window icon: {e}")
+        
+        sv_ttk.set_theme("light")
+        
+        # Main frame with two sections
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Video feed section
+        self.video_frame = ttk.Frame(main_frame)
+        self.video_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        self.video_label = ttk.Label(self.video_frame)
+        self.video_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Tabs for settings and triggers
+        tabs_frame = ttk.Frame(main_frame, padding="10")
+        tabs_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        
+        notebook = ttk.Notebook(tabs_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Settings tab
+        settings_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(settings_frame, text="Settings")
+        
+        # Triggers tab
+        triggers_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(triggers_frame, text="Triggers")
+        
+        # Dynamic fonts (will be updated in resize handler)
+        self.title_font = font.Font(family="Segoe UI", size=14, weight="bold")
+        self.label_font = font.Font(family="Segoe UI", size=10)
+        
+        # --- Settings Tab ---
+        # Settings title
+        self.title_label = ttk.Label(settings_frame, text="Settings", font=self.title_font)
+        self.title_label.pack(pady=10)
+        
+        # StringVars for dynamic value display
+        cooldown_var = tk.StringVar(value=str(self.temp_settings.trigger_cooldown))
+        duration_var = tk.StringVar(value=f"{self.temp_settings.required_duration:.1f}")
+        threshold_var = tk.StringVar(value=str(self.temp_settings.pull_threshold))
+        
+        # Trigger Cooldown
+        cooldown_label = ttk.Label(settings_frame, text="Trigger Cooldown (s): Time between alerts", font=self.label_font)
+        cooldown_label.pack(anchor=tk.W)
+        cooldown_frame = ttk.Frame(settings_frame)
+        cooldown_frame.pack(fill=tk.X, pady=5)
+        cooldown_scale = ttk.Scale(cooldown_frame, from_=0, to=10, orient=tk.HORIZONTAL,
+                                 command=lambda x: [setattr(self.temp_settings, 'trigger_cooldown', int(float(x))),
+                                                  cooldown_var.set(str(int(float(x))))])
+        cooldown_scale.set(self.temp_settings.trigger_cooldown)
+        cooldown_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(cooldown_frame, textvariable=cooldown_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        # Required Duration
+        duration_label = ttk.Label(settings_frame, text="Required Duration (s): Detection time", font=self.label_font)
+        duration_label.pack(anchor=tk.W, pady=5)
+        duration_frame = ttk.Frame(settings_frame)
+        duration_frame.pack(fill=tk.X, pady=5)
+        duration_scale = ttk.Scale(duration_frame, from_=0, to=5, orient=tk.HORIZONTAL,
+                                  command=lambda x: [setattr(self.temp_settings, 'required_duration', float(x)),
+                                                   duration_var.set(f"{float(x):.1f}")])
+        duration_scale.set(self.temp_settings.required_duration)
+        duration_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(duration_frame, textvariable=duration_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        # Pull Threshold
+        threshold_label = ttk.Label(settings_frame, text="Pull Threshold: Sensitivity", font=self.label_font)
+        threshold_label.pack(anchor=tk.W, pady=5)
+        threshold_frame = ttk.Frame(settings_frame)
+        threshold_frame.pack(fill=tk.X, pady=5)
+        threshold_scale = ttk.Scale(threshold_frame, from_=0, to=30, orient=tk.HORIZONTAL,
+                                   command=lambda x: [setattr(self.temp_settings, 'pull_threshold', int(float(x))),
+                                                    threshold_var.set(str(int(float(x))))])
+        threshold_scale.set(self.temp_settings.pull_threshold)
+        threshold_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(threshold_frame, textvariable=threshold_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        # Buttons
+        button_frame = ttk.Frame(settings_frame)
+        button_frame.pack(pady=20)
+        ttk.Button(button_frame, text="Apply", command=self.apply_settings_changes).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Reset", command=self.on_reset).pack(side=tk.LEFT, padx=5)
+        
+        # Status labels
+        self.status_label = ttk.Label(settings_frame, text="Controls: Q to quit, R to reset", font=self.label_font)
+        self.status_label.pack(anchor=tk.W, pady=5)
+        self.fps_label = ttk.Label(settings_frame, text="FPS: 0", font=self.label_font)
+        self.fps_label.pack(anchor=tk.W)
+        self.depth_label = ttk.Label(settings_frame, text="Depth ratio: 0.00", font=self.label_font)
+        self.depth_label.pack(anchor=tk.W)
+        
+        # --- Triggers Tab ---
+        # Triggers title
+        triggers_title = ttk.Label(triggers_frame, text="Daily Triggers", font=self.title_font)
+        triggers_title.pack(pady=10)
+        
+        # Calendar widget
+        self.calendar = Calendar(triggers_frame, selectmode="day", font=self.label_font,
+                                date_pattern="yyyy-mm-dd")
+        self.calendar.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Label to display trigger count for selected date
+        self.trigger_label = ttk.Label(triggers_frame, text="Select a date to view triggers", font=self.label_font)
+        self.trigger_label.pack(pady=5)
+        
+        # Bind calendar selection to update trigger count
+        self.calendar.bind("<<CalendarSelected>>", self.update_trigger_count)
+        
+        # Highlight days with triggers
+        self.update_calendar_highlights()
+        
+        # Keyboard bindings
+        self.root.bind('q', lambda e: self.on_quit())
+        self.root.bind('r', lambda e: self.on_reset())
+        
+        # Resize event binding
+        self.root.bind('<Configure>', self.handle_resize)
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_quit)
+        self.running = True
+        
+        self.root.after(100, self.check_queue)
     
-    # Délai d'initialisation pour permettre le démarrage d'Iriun
-    time.sleep(2)
+    def update_trigger_count(self, event=None) -> None:
+        """Update the trigger count label based on selected calendar date."""
+        selected_date = self.calendar.get_date()
+        count = self.stats.daily_stats.get(selected_date, 0)
+        self.trigger_label.configure(text=f"Triggers on {selected_date}: {count}")
     
-    # Lancer directement la détection
-    safe_detection()
+    def update_calendar_highlights(self) -> None:
+        """Highlight days in the calendar that have triggers."""
+        for date, count in self.stats.daily_stats.items():
+            if count > 0:
+                try:
+                    # Highlight days with triggers using a red background
+                    self.calendar.calevent_create(datetime.strptime(date, "%Y-%m-%d"), f"{count} triggers", "trigger")
+                    self.calendar.tag_config("trigger", background="red", foreground="white")
+                except ValueError:
+                    logging.warning(f"Invalid date format in daily_stats: {date}")
+    
+    def handle_resize(self, event: tk.Event) -> None:
+        """Handle window resize to scale UI elements."""
+        if not self.running or self.root is None:
+            return
+        window_width = self.root.winfo_width()
+        window_height = self.root.winfo_height()
+        
+        # Calculate video frame size (maintain 4:3 aspect ratio)
+        video_frame_width = window_width * 0.7  # 70% of window width for video
+        video_frame_height = window_height - 20  # Account for padding
+        aspect_ratio = 4 / 3
+        if video_frame_width / video_frame_height > aspect_ratio:
+            self.video_width = int(video_frame_height * aspect_ratio)
+            self.video_height = int(video_frame_height)
+        else:
+            self.video_width = int(video_frame_width)
+            self.video_height = int(video_frame_width / aspect_ratio)
+        
+        # Update font sizes
+        title_font_size = max(12, window_height // 40)
+        label_font_size = max(8, window_height // 50)
+        self.title_font.configure(size=title_font_size)
+        self.label_font.configure(size=label_font_size)
+        
+        # Update video frame size
+        self.video_frame.configure(width=self.video_width, height=self.video_height)
+    
+    def update_frame(self, frame: Frame, fps: float, size_ratio: float, is_at_same_depth: bool) -> None:
+        """Update video feed and UI elements with new frame."""
+        if not self.running or self.root is None:
+            return
+        try:
+            # Convert OpenCV frame (BGR) to PIL Image
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(frame_rgb)
+            # Resize to fit video frame
+            pil_image = pil_image.resize((self.video_width, self.video_height), Image.Resampling.LANCZOS)
+            self.photo = ImageTk.PhotoImage(pil_image)
+            self.video_label.configure(image=self.photo)
+            self.video_label.image = self.photo  # Keep reference to prevent GC
+            
+            # Update status labels
+            self.fps_label.configure(text=f"FPS: {int(fps)}")
+            self.depth_label.configure(text=f"Depth ratio: {size_ratio:.2f}", 
+                                    foreground="green" if is_at_same_depth else "red")
+        except tk.TclError as e:
+            logging.error(f"Tkinter error in update_frame: {e}")
+            self.running = False
+        except Exception as e:
+            logging.error(f"Error in update_frame: {e}")
+    
+    def check_queue(self) -> None:
+        """Check frame queue for new frames."""
+        if not self.running:
+            return
+        try:
+            if not self.frame_queue.empty():
+                frame, fps, size_ratio, is_at_same_depth = self.frame_queue.get_nowait()
+                self.update_frame(frame, fps, size_ratio, is_at_same_depth)
+        except queue.Empty:
+            pass
+        except Exception as e:
+            logging.error(f"Error in check_queue: {e}")
+        if self.running:
+            self.root.after(50, self.check_queue)  # ~20 FPS
+    
+    def add_config_interface(self, frame: Frame, config: Config) -> Frame:
+        """Add configuration overlays to the video frame."""
+        h, w, _ = frame.shape
+        font_scale = max(0.5, w / 640)  # Scale font with frame width
+        cv2.putText(frame, f"Detection time: {config.detection['required_duration']:.1f}s", 
+                    (20, 60), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), 2)
+        return frame
+    
+    def draw_detection_progress(self, frame: Frame, start_time: float, required_duration: float) -> Frame:
+        if start_time is None:
+            return frame
+        h, w, _ = frame.shape
+        current_time = time.time()
+        duration = max(required_duration, 0.001)
+        elapsed = current_time - start_time
+        progress = int((elapsed / duration) * w)
+        progress = min(max(progress, 0), w)
+        cv2.line(frame, (0, 30), (progress, 30), (0, 255, 0), 5)
+        return frame
+    
+    def draw_eye_level(self, frame: Frame, eye_level: int) -> Frame:
+        h, w, _ = frame.shape
+        cv2.line(frame, (0, int(eye_level)), (w, int(eye_level)), (0, 255, 255), 2)
+        return frame
+    
+    def draw_overexposure_warning(self, frame: Frame) -> Frame:
+        h, w, _ = frame.shape
+        font_scale = max(0.5, w / 640)
+        cv2.putText(frame, "Overexposure detected!", (20, 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
+        return frame
+    
+    def apply_settings_changes(self) -> None:
+        """Apply settings changes and update config."""
+        self.config.detection['trigger_cooldown'] = self.temp_settings.trigger_cooldown
+        self.config.detection['required_duration'] = self.temp_settings.required_duration
+        self.config.detection['pull_threshold'] = self.temp_settings.pull_threshold
+        print(f"Settings updated: Cooldown={self.config.detection['trigger_cooldown']}s, " 
+              f"Duration={self.config.detection['required_duration']:.1f}s, "
+              f"Threshold={self.config.detection['pull_threshold']}")
+    
+    def cleanup(self) -> None:
+        """Close Tkinter window."""
+        self.running = False
+        if self.root is None:
+            return
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+        self.root = None
+        logging.info("UI cleaned up")
+
+
+class TrichotillomaniaDetector:
+    def __init__(self):
+        self.audio_folder = "audio"
+        self.stock_audio_folder = "stock_audio"
+        ResourceManager.ensure_directories([self.audio_folder, self.stock_audio_folder])
+        
+        self.config_manager = ConfigManager()
+        self.config = self.config_manager.config
+        
+        self.camera = CameraManager(
+            device_id=self.config.camera['device'],
+            flip_horizontal=self.config.camera['flip']
+        )
+        self.detector = GestureDetector(self.config)
+        self.audio_manager = AudioManager(
+            self.audio_folder, self.stock_audio_folder, use_tts=True
+        )
+        self.image_processor = ImageProcessor()
+        self.stats = PullingStats()
+        
+        self.ui = UIManager(
+            self.config,
+            self.stats,
+            on_quit=self.quit,
+            on_reset=self.reset_config
+        )
+        
+        self.running = False
+        self.last_trigger_time = 0
+        self.detection_start_time = None
+        self.prev_frame_time = 0
+        self.new_frame_time = 0
+        self.camera_thread = None
+    
+    def run(self) -> None:
+        if not self.camera.open():
+            print("Failed to open camera. Exiting.")
+            logging.error("Camera failed to open")
+            self.quit()
+            return
+        
+        self.ui.initialize_ui()
+        self.running = True
+        
+        print("\nHair-pulling detection system is running...")
+        print("Press 'Q' to quit, 'R' to reset detection parameters\n")
+        logging.info("Application started")
+        
+        # Start camera thread
+        self.camera_thread = threading.Thread(target=self.camera_loop)
+        self.camera_thread.daemon = True
+        self.camera_thread.start()
+        logging.info("Camera thread started")
+        
+        # Start Tkinter main loop
+        try:
+            self.ui.root.mainloop()
+        except KeyboardInterrupt:
+            self.quit()
+        except Exception as e:
+            logging.error(f"Error in main loop: {e}")
+            self.quit()
+    
+    def camera_loop(self) -> None:
+        """Run camera capture and processing in a separate thread."""
+        while self.running:
+            self.process_one_frame()
+            time.sleep(0.01)  # Prevent tight loop
+    
+    def process_one_frame(self) -> None:
+        try:
+            self.new_frame_time = time.time()
+            fps = 1 / (self.new_frame_time - self.prev_frame_time) if self.prev_frame_time > 0 else 30
+            self.prev_frame_time = self.new_frame_time
+            
+            success, frame = self.camera.read_frame()
+            if not success:
+                logging.error("Failed to read frame, stopping")
+                print("Failed to read frame.")
+                self.quit()
+                return
+            
+            is_overexposed = self.image_processor.is_overexposed(frame)
+            if is_overexposed:
+                self.camera.adjust_exposure(is_overexposed)
+                frame = self.ui.draw_overexposure_warning(frame)
+            
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            hand_results, face_results = self.detector.process_frame(rgb_frame)
+            
+            frame = self.detector.draw_landmarks(frame, hand_results, face_results)
+            frame = self.ui.add_config_interface(frame, self.config)
+            
+            size_ratio = 0.0
+            is_at_same_depth = False
+            
+            if hand_results.multi_hand_landmarks and face_results and face_results.multi_face_landmarks:
+                hand_landmarks = hand_results.multi_hand_landmarks[0]
+                face_landmarks = face_results.multi_face_landmarks[0]
+                
+                h, w, _ = frame.shape
+                
+                left_eye_y = face_landmarks.landmark[self.detector.LEFT_EYE].y * h
+                right_eye_y = face_landmarks.landmark[self.detector.RIGHT_EYE].y * h
+                eye_level = (left_eye_y + right_eye_y) / 2
+                
+                frame = self.ui.draw_eye_level(frame, eye_level)
+                
+                hand_size = self.detector.get_hand_size(hand_landmarks, w, h)
+                head_size = self.detector.get_head_size(face_landmarks, w, h)
+                size_ratio = hand_size / head_size if head_size > 0 else 0
+                
+                is_at_same_depth = 0.1 < size_ratio < 3.0
+                
+                hand_y = hand_landmarks.landmark[9].y * h
+                
+                is_above_eyes = hand_y < eye_level
+                is_near_head = abs(hand_y - eye_level) < self.config.detection['max_head_distance']
+                
+                is_pulling = is_at_same_depth and is_near_head and is_above_eyes
+                
+                if is_pulling:
+                    if self.detection_start_time is None:
+                        self.detection_start_time = time.time()
+                    
+                    elapsed_time = time.time() - self.detection_start_time
+                    frame = self.ui.draw_detection_progress(frame, self.detection_start_time, 
+                                                        self.config.detection['required_duration'])
+                    
+                    if elapsed_time >= self.config.detection['required_duration']:
+                        current_time = time.time()
+                        cooldown_time = self.config.detection['trigger_cooldown']
+                        
+                        if current_time - self.last_trigger_time > cooldown_time:
+                            print(f"Pulling gesture detected at {time.strftime('%H:%M:%S')}")
+                            self.audio_manager.play_message()
+                            self.last_trigger_time = current_time
+                            self.stats.add_trigger()
+                            print(self.stats.get_daily_report())
+                            # Update calendar highlights
+                            self.ui.update_calendar_highlights()
+                            self.ui.update_trigger_count()
+                        self.detection_start_time = None
+                else:
+                    self.detection_start_time = None
+            else:
+                self.detection_start_time = None
+            
+            # Add frame to queue for UI update
+            if self.ui.running:
+                try:
+                    if self.ui.frame_queue.full():
+                        self.ui.frame_queue.get_nowait()
+                    self.ui.frame_queue.put((frame, fps, size_ratio, is_at_same_depth))
+                except queue.Full:
+                    pass
+                except Exception as e:
+                    logging.error(f"Error adding frame to queue: {e}")
+        except Exception as e:
+            logging.error(f"Error in process_one_frame: {e}")
+            self.quit()
+    
+    def quit(self) -> None:
+        """Quit the application."""
+        self.running = False
+        self.cleanup()
+        logging.info("Application quit")
+    
+    def reset_config(self) -> None:
+        """Reset configuration to default."""
+        self.config_manager.reset_to_default()
+        self.config = self.config_manager.config
+        self.ui.temp_settings = TempSettings(
+            trigger_cooldown=self.config.detection['trigger_cooldown'],
+            required_duration=self.config.detection['required_duration'],
+            pull_threshold=self.config.detection['pull_threshold']
+        )
+        print("Settings reset to default values")
+        logging.info("Configuration reset to default")
+    
+    def cleanup(self) -> None:
+        print("\nShutting down... please wait")
+        self.running = False
+        self.camera.close()
+        self.detector.cleanup()
+        self.audio_manager.cleanup()
+        self.ui.cleanup()
+        print("Application terminated")
+        logging.info("Application cleanup completed")
+
+
+def main() -> None:
+    try:
+        detector = TrichotillomaniaDetector()
+        detector.run()
+    except KeyboardInterrupt:
+        print("\nApplication interrupted by user")
+        logging.info("Application interrupted by user")
+    except Exception as e:
+        print(f"Error: {e}")
+        print("Application terminated due to error")
+        logging.error(f"Application error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
