@@ -33,7 +33,7 @@
   - Microphone/speakers for audio feedback.
   - At least 4GB RAM and a CPU for real-time processing.
 - **Software**:
-  - Python 3.8+ (via Anaconda).
+  - Python 3.8+ (via Anaconda for exemple).
   - Conda environment named with required packages (see [Installation](#installation)).
 - **Dependencies** (installed in Conda environment):
   - `opencv-python`: For webcam capture and image processing.
