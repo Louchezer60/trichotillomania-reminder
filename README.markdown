@@ -57,13 +57,13 @@ The program is designed to run in a Conda environment with all dependencies.
 
 ### Step 2: Set Up the Conda Environment
 1. Open Anaconda Prompt or a terminal.
-2. Create the "tricho" environment:
+2. Create the "name_of_your_env" environment:
    ```bash
-   conda create -n tricho python=3.8
+   conda create -n name_of_your_env python=3.8
    ```
 3. Activate the environment:
    ```bash
-   conda activate tricho
+   conda activate name_of_your_env
    ```
 4. Install required packages:
    ```bash
