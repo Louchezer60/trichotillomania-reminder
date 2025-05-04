@@ -94,7 +94,7 @@ The program is designed to run in a Conda environment with all dependencies.
    - Alternatively, in Anaconda Prompt:
      ```bash
      cd C:\PATH
-     conda activate tricho
+     conda activate name_of_env
      python tricho-reminder.py
      ```
 2. **Interact with the UI**:
@@ -168,9 +168,9 @@ The program allows you to modify the camera and detection config
   - Verify: Run `python -c "import cv2; print(cv2.VideoCapture(0).isOpened())"`. Should output `True`.
 - **Calendar Not Displaying**:
   - Error: `"No module named 'tkcalendar'"`.
-  - Fix: Install `tkcalendar` in the "tricho" environment:
+  - Fix: Install `tkcalendar` in the "name_of_env" environment:
     ```bash
-    conda activate tricho
+    conda activate name_of_env
     pip install tkcalendar
     ```
 - **Selected Day Text Invisible**:
