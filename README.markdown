@@ -136,11 +136,9 @@ The UI is divided into two main sections:
     - Selected day has a black background with black text (known issue, fix in progress).
 
 ## Configuration
-The program uses two configuration files:
-- **config.json**:
+The program allows you to modify the camera and detection config
   - Stores detection, audio, and camera settings.
   - Default values:
-    ```json
     {
       "detection": {
         "hand_confidence": 0.7,
@@ -166,7 +164,7 @@ The program uses two configuration files:
 ## Troubleshooting
 - **Camera Not Found**:
   - Error: `"Error: Could not open camera"`.
-  - Fix: Ensure the webcam is connected and not in use by another application. Check `config.json` for correct `camera.device` (default: 0).
+  - Fix: Ensure the webcam is connected and not in use by another application.
   - Verify: Run `python -c "import cv2; print(cv2.VideoCapture(0).isOpened())"`. Should output `True`.
 - **Calendar Not Displaying**:
   - Error: `"No module named 'tkcalendar'"`.
@@ -186,10 +184,10 @@ The program uses two configuration files:
   - Error: `"Audio playback error"`.
   - Fix: Ensure speakers are connected and not muted. Check `stock_audio` for valid `.mp3`/`.wav` files or enable TTS in `AudioManager` (`use_tts=True`).
 - **Conda Environment Issues**:
-  - Error: `"conda not recognized"` or `"environment tricho not found"`.
+  - Error: `"conda not recognized"` or `"environment name_of_your_env not found"`.
   - Fix: Verify Anaconda installation (`conda --version`) and environment (`conda env list`). Recreate the environment if needed:
     ```bash
-    conda create -n tricho python=3.8
+    conda create -n name_of_your_env python=3.8
     ```
 - **Logs**:
   - Check the terminal for `ERROR` or `WARNING` messages (e.g., `Invalid date format in daily_stats`).
@@ -209,7 +207,7 @@ Suggested improvements:
 - Optimize MediaPipe performance for lower-end hardware.
 
 ## License
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the GPL-3.0 license. See the `LICENSE` file for details.
 
 ## Acknowledgments
 - **MediaPipe**: For robust hand and face tracking.
