@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Hair-pulling detection system - Prevents trichotillomania behaviors
 
