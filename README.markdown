@@ -1,92 +1,227 @@
-# Tricho-Reminder - Hair Pulling Detection
+# Trichotillomania Reminder
 
-Tricho-Reminder is a Python application designed to detect hair-pulling behavior using computer vision and provide audio feedback to help users manage trichotillomania. It uses a webcam to track hand and facial landmarks, detecting when a hand approaches the head and potentially engages in hair-pulling motions. The application offers motivational audio feedback, either through text-to-speech (TTS) or pre-recorded stock audio files.
+![Trichotillomania Reminder UI](screenshot.png) <!-- Placeholder for screenshot -->
+
+**Trichotillomania Reminder** is a computer vision-based application designed to help individuals with trichotillomania (compulsive hair-pulling) by detecting hair-pulling gestures and providing audio feedback to interrupt the behavior. The program uses real-time webcam input, MediaPipe for hand and face tracking, and a Tkinter-based user interface with scalable video feed and settings. It includes a calendar to monitor daily triggers, making it a valuable tool for self-awareness and behavior management.
+
+## Table of Contents
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [UI Overview](#ui-overview)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
 
 ## Features
-- Real-time hand and face tracking using MediaPipe
-- Configurable detection sensitivity and audio feedback
-- Support for both TTS and stock audio files
-- Visual feedback with on-screen controls and settings
-- Adjustable parameters for detection cooldown, duration, and movement threshold
-- Statistics tracking for daily hair-pulling triggers (not implemented yet)
+- **Real-Time Detection**: Uses MediaPipe to detect hand gestures near the head, identifying potential hair-pulling behavior.
+- **Audio Feedback**: Plays motivational phrases via text-to-speech (gTTS) or stock audio files to interrupt detected hair-pulling.
+- **Scalable UI**: Tkinter-based interface with a resizable video feed (4:3 aspect ratio) and dynamic font sizing.
+- **Settings Tab**: Adjust detection parameters (trigger cooldown, required duration, pull threshold) with sliders and apply/reset buttons.
+- **Triggers Tab**: Calendar view (`tkcalendar`) to monitor daily hair-pulling triggers, with red highlights for days with events.
+- **Statistics Tracking**: Saves trigger counts in `hair_stats.json` for persistent daily statistics.
+- **Cross-Platform**: Runs on Windows (tested) with potential for Linux/macOS (with minor adjustments).
+- **Customizable**: Configurable via `config.json` for camera settings, detection sensitivity, and audio preferences.
 
-## Prerequisites
-- Python 3.8 or higher (https://www.python.org/downloads/)
-- A webcam (USB or integrated)
-- Speakers or headphones for audio feedback
-
-## Dependencies
-The application relies on the following Python packages. Install them using `pip`:
-
-```bash
-pip install opencv-python mediapipe pygame numpy gTTS
-```
-
-### Dependency Details
-- **opencv-python**: For webcam access and image processing
-- **mediapipe**: For hand and face landmark detection
-- **pygame**: For audio playback
-- **numpy**: For numerical computations and array operations
-- **gTTS**: For text-to-speech functionality
-
-## Optional Setup for Stock Audio
-If you prefer using pre-recorded audio files instead of TTS:
-1. Create a folder named `static/stock_audio` in the project directory.
-2. Place `.mp3` or `.wav` audio files in this folder.
-3. The application will automatically detect and use these files if present.
+## Requirements
+- **Operating System**: Windows 10/11 (tested); Linux/macOS may require adjustments.
+- **Hardware**:
+  - Webcam (USB or built-in).
+  - Microphone/speakers for audio feedback.
+  - At least 4GB RAM and a modern CPU for real-time processing.
+- **Software**:
+  - Python 3.8+ (via Anaconda).
+  - Conda environment named "tricho" with required packages (see [Installation](#installation)).
+- **Dependencies** (installed in Conda environment):
+  - `opencv-python`: For webcam capture and image processing.
+  - `mediapipe`: For hand and face landmark detection.
+  - `pygame`: For audio playback.
+  - `gTTS`: For text-to-speech motivational phrases.
+  - `Pillow`: For image handling in Tkinter.
+  - `sv-ttk`: For Sun Valley theme (modern UI look).
+  - `tkcalendar`: For calendar-based trigger monitoring.
 
 ## Installation
-1. Clone or download this repository to your local machine.
-2. Install the required dependencies:
+The program is designed to run in a Conda environment named "tricho" located at `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+
+### Step 1: Install Anaconda
+1. Download and install Anaconda from [anaconda.com](https://www.anaconda.com/products/distribution).
+2. Verify installation:
    ```bash
-   pip install opencv-python mediapipe pygame numpy gTTS
+   conda --version
    ```
-3. Ensure your webcam is connected and functional.
-4. (Optional) Set up the `static/stock_audio` folder with audio files if using stock audio.
+   Expected output: `conda 4.x.x` or similar.
+
+### Step 2: Set Up the Conda Environment
+1. Open Anaconda Prompt or a terminal.
+2. Create the "tricho" environment:
+   ```bash
+   conda create -n tricho python=3.8
+   ```
+3. Activate the environment:
+   ```bash
+   conda activate tricho
+   ```
+4. Install required packages:
+   ```bash
+   pip install opencv-python mediapipe pygame gTTS Pillow sv-ttk tkcalendar
+   ```
+
+### Step 3: Download the Program
+1. Save `tricho-reminder.py` to `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+2. Create a batch file (`lancer_tricho.bat`) in the same directory with the following content:
+   ```bat
+   @echo off
+   cd /d "C:\Users\Louchezer\Desktop\Tricho-reminder"
+   call "%USERPROFILE%\Anaconda3\Scripts\activate.bat" %USERPROFILE%\Anaconda3
+   call conda activate tricho
+   start cmd /k python tricho-reminder.py
+   ```
+   This batch file activates the "tricho" environment and runs the program.
+
+### Step 4: Prepare Resources
+1. Ensure the following directories exist (created automatically on first run):
+   - `C:\Users\Louchezer\Desktop\Tricho-reminder\audio`: For generated TTS audio files.
+   - `C:\Users\Louchezer\Desktop\Tricho-reminder\stock_audio`: For optional stock audio files (e.g., `.mp3`, `.wav`).
+2. (Optional) Place a custom icon (`icon.ico`) in the project directory for the Tkinter window.
 
 ## Usage
-1. Run the script:
-   ```bash
-   python webcam_eyes.py
-   ```
-2. If stock audio files are found, choose between:
-   - **1**: Text-to-speech feedback
-   - **2**: Stock audio files (default)
-3. The application will initialize the webcam and start tracking.
-4. Use the following controls:
-   - **Q**: Quit the application
-   - **S**: Toggle the settings window
-   - **A**: Apply settings changes (when settings window is active)
-   - **R**: Reset settings to default
-5. Adjust detection parameters in the settings window using trackbars.
+1. **Run the Program**:
+   - Double-click `lancer_tricho.bat` in `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+   - Alternatively, in Anaconda Prompt:
+     ```bash
+     cd C:\Users\Louchezer\Desktop\Tricho-reminder
+     conda activate tricho
+     python tricho-reminder.py
+     ```
+2. **Interact with the UI**:
+   - **Video Feed**: Displays webcam input with hand/face landmarks and detection overlays.
+   - **Settings Tab**:
+     - Adjust **Trigger Cooldown** (seconds between alerts).
+     - Adjust **Required Duration** (seconds for detection confirmation).
+     - Adjust **Pull Threshold** (sensitivity for gesture detection).
+     - Click **Apply** to save changes or **Reset** to restore defaults.
+   - **Triggers Tab**:
+     - View a calendar with red highlights for days with hair-pulling triggers.
+     - Click a day to see the trigger count (e.g., "Triggers on 2025-05-04: 3").
+   - **Keyboard Shortcuts**:
+     - Press `Q` to quit.
+     - Press `R` to reset settings to defaults.
+3. **Trigger Detection**:
+   - Move your hand near your head (within configured distance) for the specified duration.
+   - The program detects the gesture, plays a motivational phrase, and logs the trigger in `hair_stats.json`.
+   - The calendar updates with a red highlight for the current day.
+4. **Exit**:
+   - Press `Q`, close the window, or press `Ctrl+C` in the terminal.
+   - The program saves settings (`config.json`) and stats (`hair_stats.json`) before exiting.
+
+## UI Overview
+The UI is divided into two main sections:
+- **Left Panel**: Scalable video feed (640x480 default, maintains 4:3 aspect ratio) showing:
+  - Webcam input with hand and face landmarks (green for hands, red for face contours).
+  - Detection progress bar (green) during potential hair-pulling.
+  - Eye-level line (yellow) for gesture reference.
+  - Overexposure warnings (red text) if lighting is too bright.
+- **Right Panel**: Tabbed interface with:
+  - **Settings Tab**:
+    - Sliders for trigger cooldown (0-10s), required duration (0-5s), and pull threshold (0-30).
+    - Apply/Reset buttons.
+    - Status labels for FPS, depth ratio (green/red based on hand-head proximity), and controls.
+  - **Triggers Tab**:
+    - Calendar showing daily triggers (red background for days with triggers, white text).
+    - Label displaying trigger count for the selected date.
+    - Selected day has a black background with black text (known issue, fix in progress).
 
 ## Configuration
-The application uses a `config.json` file (auto-generated) to store settings. Key parameters include:
-- **Detection**:
-  - `hand_confidence`: Minimum confidence for hand detection (default: 0.7)
-  - `face_confidence`: Minimum confidence for face detection (default: 0.5)
-  - `trigger_cooldown`: Minimum time between alerts (default: 3 seconds)
-  - `required_duration`: Time hand must be near head to trigger (default: 0.75 seconds)
-  - `pull_threshold`: Sensitivity for detecting pulling motion (default: 1)
-  - `max_head_distance`: Maximum distance between hand and head (default: 150 pixels)
-- **Audio**:
-  - `volume`: Audio playback volume (default: 1.0)
-  - `language`: TTS language (default: "fr" for French)
-- **Camera**:
-  - `device`: Camera index (default: 0)
-  - `flip`: Flip camera feed horizontally (default: True)
+The program uses two configuration files:
+- **config.json**:
+  - Stores detection, audio, and camera settings.
+  - Default values:
+    ```json
+    {
+      "detection": {
+        "hand_confidence": 0.7,
+        "face_confidence": 0.5,
+        "trigger_cooldown": 3,
+        "required_duration": 0.75,
+        "pull_threshold": 1,
+        "max_head_distance": 150
+      },
+      "audio": {"volume": 1.0, "language": "en"},
+      "camera": {"device": 0, "flip": true}
+    }
+    ```
+  - Modified via the Settings tab or by editing the file directly.
+- **hair_stats.json**:
+  - Stores daily trigger counts.
+  - Example:
+    ```json
+    {"daily_stats": {"2025-05-04": 3, "2025-05-03": 1}}
+    ```
+  - Updated automatically when triggers are detected.
 
 ## Troubleshooting
-- **No camera found**: Ensure your webcam is connected and not in use by another application. Check available cameras with the script's camera detection.
-- **Audio issues**: Verify that speakers are connected and not muted. Ensure audio files are valid if using stock audio.
-- **Performance issues**: Adjust `process_every_n_frames` in the code (default: 3) to skip more frames and reduce CPU load.
-- **Overexposure**: The application automatically adjusts exposure, but you may need to tweak lighting conditions for optimal detection.
+- **Camera Not Found**:
+  - Error: `"Error: Could not open camera"`.
+  - Fix: Ensure the webcam is connected and not in use by another application. Check `config.json` for correct `camera.device` (default: 0).
+  - Verify: Run `python -c "import cv2; print(cv2.VideoCapture(0).isOpened())"`. Should output `True`.
+- **Calendar Not Displaying**:
+  - Error: `"No module named 'tkcalendar'"`.
+  - Fix: Install `tkcalendar` in the "tricho" environment:
+    ```bash
+    conda activate tricho
+    pip install tkcalendar
+    ```
+- **Selected Day Text Invisible**:
+  - Issue: Selected day in the calendar has black text on a black background.
+  - Status: Known issue. A fix is in progress to set the selected day’s text to white.
+  - Workaround: Use the trigger count label below the calendar to confirm the selected date’s triggers.
+- **No Triggers Recorded**:
+  - Check: Open `hair_stats.json`. If empty or missing, trigger a detection by moving your hand near your head.
+  - Verify: Ensure `required_duration` and `pull_threshold` in the Settings tab are not too high.
+- **Audio Not Playing**:
+  - Error: `"Audio playback error"`.
+  - Fix: Ensure speakers are connected and not muted. Check `stock_audio` for valid `.mp3`/`.wav` files or enable TTS in `AudioManager` (`use_tts=True`).
+- **Conda Environment Issues**:
+  - Error: `"conda not recognized"` or `"environment tricho not found"`.
+  - Fix: Verify Anaconda installation (`conda --version`) and environment (`conda env list`). Recreate the environment if needed:
+    ```bash
+    conda create -n tricho python=3.8
+    ```
+- **Logs**:
+  - Check the terminal for `ERROR` or `WARNING` messages (e.g., `Invalid date format in daily_stats`).
+  - Share logs with support for assistance.
 
-## Notes
-- The application is optimized for a single user facing the webcam.
-- For best results, ensure good lighting and minimal background movement.
-- The `static/generated_audio` folder is used for caching TTS audio files.
-- The application may require a short delay (2 seconds) at startup to initialize the webcam.
+## Contributing
+Contributions are welcome! To contribute:
+1. Fork the repository (if hosted on GitHub).
+2. Create a feature branch (`git checkout -b feature/your-feature`).
+3. Make changes and test thoroughly.
+4. Submit a pull request with a clear description of changes.
+
+Suggested improvements:
+- Fix the calendar’s selected day text color (black on black).
+- Add monthly trigger summaries or CSV export for stats.
+- Support multiple languages for TTS.
+- Optimize MediaPipe performance for lower-end hardware.
 
 ## License
 This project is licensed under the MIT License. See the `LICENSE` file for details.
+
+## Acknowledgments
+- **MediaPipe**: For robust hand and face tracking.
+- **tkcalendar**: For the calendar widget in the Triggers tab.
+- **sv-ttk**: For the modern Sun Valley theme.
+- **gTTS**: For text-to-speech functionality.
+- **OpenCV**: For webcam capture and image processing.
+
+---
+
+**Contact**: For support or feature requests, contact the developer via email or GitHub issues (if hosted).
+
+**Version**: 1.0.0 (May 2025)
+
+**Happy monitoring, and stay strong in managing trichotillomania!**
