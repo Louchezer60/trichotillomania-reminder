@@ -1,7 +1,8 @@
+numpy
+pygame
 opencv-python
 mediapipe
-pygame
 gTTS
-Pillow
 sv-ttk
+Pillow
 tkcalendar
