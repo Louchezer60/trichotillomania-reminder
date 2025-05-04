@@ -1,6 +1,6 @@
 # Trichotillomania Reminder
 
-![Trichotillomania Reminder UI](screenshot.png) <!-- Placeholder for screenshot -->
+![Trichotillomania Reminder UI](UI.png) <!-- Placeholder for screenshot -->
 
 **Trichotillomania Reminder** is a computer vision-based application designed to help individuals with trichotillomania (compulsive hair-pulling) by detecting hair-pulling gestures and providing audio feedback to interrupt the behavior. The program uses real-time webcam input, MediaPipe for hand and face tracking, and a Tkinter-based user interface with scalable video feed and settings. It includes a calendar to monitor daily triggers, making it a valuable tool for self-awareness and behavior management.
 
@@ -24,17 +24,17 @@
 - **Triggers Tab**: Calendar view (`tkcalendar`) to monitor daily hair-pulling triggers, with red highlights for days with events.
 - **Statistics Tracking**: Saves trigger counts in `hair_stats.json` for persistent daily statistics.
 - **Cross-Platform**: Runs on Windows (tested) with potential for Linux/macOS (with minor adjustments).
-- **Customizable**: Configurable via `config.json` for camera settings, detection sensitivity, and audio preferences.
+- **Customizable**: Configurable via camera settings, detection sensitivity, and audio preferences.
 
 ## Requirements
 - **Operating System**: Windows 10/11 (tested); Linux/macOS may require adjustments.
 - **Hardware**:
   - Webcam (USB or built-in).
   - Microphone/speakers for audio feedback.
-  - At least 4GB RAM and a modern CPU for real-time processing.
+  - At least 4GB RAM and a CPU for real-time processing.
 - **Software**:
   - Python 3.8+ (via Anaconda).
-  - Conda environment named "tricho" with required packages (see [Installation](#installation)).
+  - Conda environment named with required packages (see [Installation](#installation)).
 - **Dependencies** (installed in Conda environment):
   - `opencv-python`: For webcam capture and image processing.
   - `mediapipe`: For hand and face landmark detection.
@@ -45,7 +45,7 @@
   - `tkcalendar`: For calendar-based trigger monitoring.
 
 ## Installation
-The program is designed to run in a Conda environment named "tricho" located at `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+The program is designed to run in a Conda environment with all dependencies.
 
 ### Step 1: Install Anaconda
 1. Download and install Anaconda from [anaconda.com](https://www.anaconda.com/products/distribution).
@@ -71,29 +71,29 @@ The program is designed to run in a Conda environment named "tricho" located at 
    ```
 
 ### Step 3: Download the Program
-1. Save `tricho-reminder.py` to `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+1. Save `tricho-reminder.py` to the path you want `C:\PATH`.
 2. Create a batch file (`lancer_tricho.bat`) in the same directory with the following content:
    ```bat
    @echo off
-   cd /d "C:\Users\Louchezer\Desktop\Tricho-reminder"
+   cd /d "C:\PATH"
    call "%USERPROFILE%\Anaconda3\Scripts\activate.bat" %USERPROFILE%\Anaconda3
-   call conda activate tricho
+   call conda activate "name_of_your_env"
    start cmd /k python tricho-reminder.py
    ```
-   This batch file activates the "tricho" environment and runs the program.
+   This batch file activates the environment and runs the program.
 
 ### Step 4: Prepare Resources
 1. Ensure the following directories exist (created automatically on first run):
-   - `C:\Users\Louchezer\Desktop\Tricho-reminder\audio`: For generated TTS audio files.
-   - `C:\Users\Louchezer\Desktop\Tricho-reminder\stock_audio`: For optional stock audio files (e.g., `.mp3`, `.wav`).
+   - `C:\PATH\audio`: For generated TTS audio files.
+   - `C:\PATH\stock_audio`: For optional stock audio files (e.g., `.mp3`, `.wav`).
 2. (Optional) Place a custom icon (`icon.ico`) in the project directory for the Tkinter window.
 
 ## Usage
 1. **Run the Program**:
-   - Double-click `lancer_tricho.bat` in `C:\Users\Louchezer\Desktop\Tricho-reminder`.
+   - Double-click `lancer_tricho.bat` in `C:\PATH`.
    - Alternatively, in Anaconda Prompt:
      ```bash
-     cd C:\Users\Louchezer\Desktop\Tricho-reminder
+     cd C:\PATH
      conda activate tricho
      python tricho-reminder.py
      ```
