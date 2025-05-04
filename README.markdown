@@ -80,7 +80,7 @@ The program is designed to run in a Conda environment with all dependencies.
    call conda activate "name_of_your_env"
    start cmd /k python tricho-reminder.py
    ```
-   This batch file activates the environment and runs the program. Change the "PATH" and "name_of_env" values for it to work!!
+   This batch file activates the environment and runs the program. **Change the "PATH" and "name_of_env" values for it to work!!**
 
 ### Step 4: Prepare Resources
 1. Ensure the following directories exist (created automatically on first run):
