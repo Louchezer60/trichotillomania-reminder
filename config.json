@@ -1,0 +1,20 @@
+{
+    "detection": {
+        "hand_confidence": 0.7,
+        "face_confidence": 0.5,
+        "trigger_cooldown": 3,
+        "required_duration": 0.75,
+        "pull_threshold": 1,
+        "max_head_distance": 100,
+        "full_head_detection": false,
+        "show_meshes": true
+    },
+    "audio": {
+        "volume": 1.0,
+        "language": "en"
+    },
+    "camera": {
+        "device": 0,
+        "flip": true
+    }
+}
