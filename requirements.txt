@@ -1,8 +1,10 @@
-numpy
-pygame
 opencv-python
 mediapipe
+pygame
 gTTS
-sv-ttk
 Pillow
+sv-ttk
 tkcalendar
+tkinterdnd2
+matplotlib
+numpy
