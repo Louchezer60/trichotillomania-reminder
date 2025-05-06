@@ -276,7 +276,6 @@ Suggested improvements:
 - Support additional languages for TTS.
 - Optimize MediaPipe for lower-end hardware.
 - Enhance drag-and-drop with multi-file upload validation.
-- Improve video embedding compatibility for non-GitHub Markdown renderers.
 
 ## License
 This project is licensed under the GPL-3.0 license. See the `LICENSE` file for details.
