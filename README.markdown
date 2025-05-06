@@ -1,11 +1,6 @@
 # Trichotillomania Reminder
 
-<video width="640" height="360" controls>
-  <source src="static/demo.gif" type="gif">
-  Your browser does not support the gif tag. View a screenshot below.
-</video>
-
-![Trichotillomania Reminder UI](UI.png) <!-- Fallback screenshot -->
+![Alt text](static/demo.gif)
 
 **Trichotillomania Reminder** is a computer vision-based application designed to assist individuals with trichotillomania (compulsive hair-pulling) by detecting hair-pulling gestures and providing audio feedback to interrupt the behavior. The program leverages real-time webcam input, MediaPipe for hand and face tracking, and a Tkinter-based user interface with a scalable video feed, customizable settings, and detailed statistics tracking. It includes a calendar for monitoring daily triggers and supports both text-to-speech (TTS) and stock audio for motivational messages, making it a powerful tool for self-awareness and behavior management.
 
