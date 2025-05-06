@@ -126,6 +126,12 @@ class GestureDetector:
                     self.drawing_spec_face
                 )
                 h, w, _ = frame.shape
+                # Draw eye level line
+                right_eye_y = int(face_landmarks.landmark[self.RIGHT_EYE].y * h)
+                left_eye_y = int(face_landmarks.landmark[self.LEFT_EYE].y * h)
+                eye_level = min(right_eye_y, left_eye_y) - int(h * 0.05)
+                cv2.line(frame, (0, eye_level), (w, eye_level), (255, 0, 0), 1)
+                
                 if self.config.detection['full_head_detection']:
                     for idx in [self.CHIN, self.LEFT_CHEEK, self.RIGHT_CHEEK, 
                                self.JAW_LEFT, self.JAW_RIGHT, self.EYEBROW_LEFT, 
@@ -133,7 +139,7 @@ class GestureDetector:
                         x = int(face_landmarks.landmark[idx].x * w)
                         y = int(face_landmarks.landmark[idx].y * h)
                         cv2.circle(frame, (x, y), 4, (0, 255, 255), -1)
-                    
+        
         return frame
     
     @staticmethod

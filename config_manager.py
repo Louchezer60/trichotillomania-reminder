@@ -17,7 +17,9 @@ class TempSettings:
     required_duration: float
     pull_threshold: int
     full_head_detection: bool
-    show_meshes: bool  # Added for mesh toggle persistence
+    show_meshes: bool
+    tts_cache_limit: float  # Cache limit in MB
+    max_head_distance: int  # Maximum head distance in pixels
 
 class ConfigManager:
     DEFAULT_CONFIG = {
@@ -29,9 +31,13 @@ class ConfigManager:
             "pull_threshold": 1,
             "max_head_distance": 100,
             "full_head_detection": False,
-            "show_meshes": True  # Default to showing meshes
+            "show_meshes": True
         },
-        "audio": {"volume": 1.0, "language": "en"},
+        "audio": {
+            "volume": 1.0,
+            "language": "en",
+            "tts_cache_limit": 50.0  # Default cache limit: 50 MB
+        },
         "camera": {"device": 0, "flip": True}
     }
     
@@ -54,7 +60,6 @@ class ConfigManager:
         detection.setdefault('full_head_detection', self.DEFAULT_CONFIG['detection']['full_head_detection'])
         detection.setdefault('show_meshes', self.DEFAULT_CONFIG['detection']['show_meshes'])
 
-        # Ensure types and ranges
         try:
             detection['hand_confidence'] = max(0.0, min(1.0, float(detection['hand_confidence'])))
             detection['face_confidence'] = max(0.0, min(1.0, float(detection['face_confidence'])))
@@ -74,9 +79,11 @@ class ConfigManager:
         audio = validated.get('audio', {})
         audio.setdefault('volume', self.DEFAULT_CONFIG['audio']['volume'])
         audio.setdefault('language', self.DEFAULT_CONFIG['audio']['language'])
+        audio.setdefault('tts_cache_limit', self.DEFAULT_CONFIG['audio']['tts_cache_limit'])
         try:
             audio['volume'] = max(0.0, min(1.0, float(audio['volume'])))
             audio['language'] = str(audio['language']) if audio['language'] in ['en', 'es', 'fr'] else 'en'
+            audio['tts_cache_limit'] = max(10.0, min(1000.0, float(audio['tts_cache_limit'])))  # Limit: 10 MB to 1 GB
         except (ValueError, TypeError) as e:
             logging.warning(f"Invalid audio config value: {e}. Reverting to defaults.")
             audio.update(self.DEFAULT_CONFIG['audio'])

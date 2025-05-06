@@ -11,17 +11,24 @@ from config_manager import Config, TempSettings
 from stats_manager import PullingStats, StatsGraphManager
 from resource_manager import ResourceManager
 import os
+import shutil
 import cv2
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+except ImportError:
+    logging.error("tkinterdnd2 not installed. Drag-and-drop functionality will be disabled.")
+    TkinterDnD = None
 
 class UIManager:
     """Manages the application's unified Tkinter UI with scalable elements."""
     
-    def __init__(self, config: Config, stats: PullingStats, on_quit: Callable, on_reset: Callable, audio_manager=None):
+    def __init__(self, config: Config, stats: PullingStats, on_quit: Callable, on_reset: Callable, audio_manager=None, camera_manager=None):
         self.config = config
         self.stats = stats
         self.on_quit = on_quit
         self.on_reset = on_reset
         self.audio_manager = audio_manager
+        self.camera_manager = camera_manager
         self.root = None
         self.video_frame = None
         self.video_label = None
@@ -35,7 +42,9 @@ class UIManager:
             required_duration=config.detection['required_duration'],
             pull_threshold=config.detection['pull_threshold'],
             full_head_detection=config.detection.get('full_head_detection', False),
-            show_meshes=config.detection.get('show_meshes', True)
+            show_meshes=config.detection.get('show_meshes', True),
+            tts_cache_limit=config.audio.get('tts_cache_limit', 50.0),
+            max_head_distance=config.detection.get('max_head_distance', 100)
         )
         self.frame_queue = queue.Queue(maxsize=1)
         self.running = False
@@ -56,10 +65,23 @@ class UIManager:
         self.camera_initialized = False
         self.camera_error_label = None
         self.retry_button = None
-        self._resize_after_id = None  # For debouncing resize events
+        self.phrases_listbox = None
+        self.phrase_entry = None
+        self.mode_var = None
+        self.cooldown_scale = None
+        self.duration_scale = None
+        self.threshold_scale = None
+        self.cache_limit_scale = None
+        self.max_head_distance_scale = None
+        self.cooldown_var = None
+        self.duration_var = None
+        self.threshold_var = None
+        self.cache_limit_var = None
+        self.max_head_distance_var = None
+        self._exposure_set = False
     
     def initialize_ui(self) -> None:
-        self.root = tk.Tk()
+        self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
         self.root.title("Trichotillomania-Reminder : Hair-Pulling Detection System")
         self.root.geometry("1280x720")
         self.root.resizable(True, True)
@@ -131,6 +153,9 @@ class UIManager:
         settings_frame = ttk.Frame(notebook, padding="10")
         notebook.add(settings_frame, text="Settings")
         
+        camera_settings_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(camera_settings_frame, text="Camera Settings")
+        
         triggers_frame = ttk.Frame(notebook, padding="10")
         notebook.add(triggers_frame, text="Triggers")
         
@@ -141,48 +166,66 @@ class UIManager:
         notebook.add(phrases_frame, text="Phrases")
         
         self.title_font = font.Font(family="Segoe UI", size=14, weight="bold")
+        self.under_title_font = font.Font(family="Segoe UI", size=10, weight="bold")
         self.label_font = font.Font(family="Segoe UI", size=10)
         
         # Settings Tab
         self.title_label = ttk.Label(settings_frame, text="Settings", font=self.title_font)
         self.title_label.pack(pady=10)
         
-        cooldown_var = tk.StringVar(value=str(self.temp_settings.trigger_cooldown))
-        duration_var = tk.StringVar(value=f"{self.temp_settings.required_duration:.1f}")
-        threshold_var = tk.StringVar(value=str(self.temp_settings.pull_threshold))
+        # Detection Settings
+        detection_label = ttk.Label(settings_frame, text="Detection Settings", font=self.under_title_font, style="TLabel")
+        detection_label.pack(anchor=tk.W, pady=5)
+        
+        self.cooldown_var = tk.StringVar(value=str(self.temp_settings.trigger_cooldown))
+        self.duration_var = tk.StringVar(value=f"{self.temp_settings.required_duration:.1f}")
+        self.threshold_var = tk.StringVar(value=str(self.temp_settings.pull_threshold))
+        self.cache_limit_var = tk.StringVar(value=f"{self.temp_settings.tts_cache_limit:.1f}")
+        self.max_head_distance_var = tk.StringVar(value=str(self.temp_settings.max_head_distance))
         
         cooldown_label = ttk.Label(settings_frame, text="Trigger Cooldown (s): Time between alerts", font=self.label_font)
         cooldown_label.pack(anchor=tk.W)
         cooldown_frame = ttk.Frame(settings_frame)
         cooldown_frame.pack(fill=tk.X, pady=5)
-        cooldown_scale = ttk.Scale(cooldown_frame, from_=0, to=10, orient=tk.HORIZONTAL,
-                                 command=lambda x: [setattr(self.temp_settings, 'trigger_cooldown', int(float(x))),
-                                                  cooldown_var.set(str(int(float(x))))])
-        cooldown_scale.set(self.temp_settings.trigger_cooldown)
-        cooldown_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(cooldown_frame, textvariable=cooldown_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        self.cooldown_scale = ttk.Scale(cooldown_frame, from_=0, to=10, orient=tk.HORIZONTAL,
+                                       command=lambda x: [setattr(self.temp_settings, 'trigger_cooldown', int(float(x))),
+                                                        self.cooldown_var.set(str(int(float(x))))])
+        self.cooldown_scale.set(self.temp_settings.trigger_cooldown)
+        self.cooldown_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(cooldown_frame, textvariable=self.cooldown_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
         
         duration_label = ttk.Label(settings_frame, text="Required Duration (s): Detection time", font=self.label_font)
         duration_label.pack(anchor=tk.W, pady=5)
         duration_frame = ttk.Frame(settings_frame)
         duration_frame.pack(fill=tk.X, pady=5)
-        duration_scale = ttk.Scale(duration_frame, from_=0, to=5, orient=tk.HORIZONTAL,
-                                  command=lambda x: [setattr(self.temp_settings, 'required_duration', float(x)),
-                                                   duration_var.set(f"{float(x):.1f}")])
-        duration_scale.set(self.temp_settings.required_duration)
-        duration_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(duration_frame, textvariable=duration_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        self.duration_scale = ttk.Scale(duration_frame, from_=0, to=5, orient=tk.HORIZONTAL,
+                                       command=lambda x: [setattr(self.temp_settings, 'required_duration', float(x)),
+                                                        self.duration_var.set(f"{float(x):.1f}")])
+        self.duration_scale.set(self.temp_settings.required_duration)
+        self.duration_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(duration_frame, textvariable=self.duration_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
         
         threshold_label = ttk.Label(settings_frame, text="Pull Threshold: Sensitivity", font=self.label_font)
         threshold_label.pack(anchor=tk.W, pady=5)
         threshold_frame = ttk.Frame(settings_frame)
         threshold_frame.pack(fill=tk.X, pady=5)
-        threshold_scale = ttk.Scale(threshold_frame, from_=0, to=30, orient=tk.HORIZONTAL,
-                                   command=lambda x: [setattr(self.temp_settings, 'pull_threshold', int(float(x))),
-                                                    threshold_var.set(str(int(float(x))))])
-        threshold_scale.set(self.temp_settings.pull_threshold)
-        threshold_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(threshold_frame, textvariable=threshold_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        self.threshold_scale = ttk.Scale(threshold_frame, from_=0, to=30, orient=tk.HORIZONTAL,
+                                        command=lambda x: [setattr(self.temp_settings, 'pull_threshold', int(float(x))),
+                                                         self.threshold_var.set(str(int(float(x))))])
+        self.threshold_scale.set(self.temp_settings.pull_threshold)
+        self.threshold_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(threshold_frame, textvariable=self.threshold_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        max_head_distance_label = ttk.Label(settings_frame, text="Max Head Distance (px): Proximity threshold", font=self.label_font)
+        max_head_distance_label.pack(anchor=tk.W, pady=5)
+        max_head_distance_frame = ttk.Frame(settings_frame)
+        max_head_distance_frame.pack(fill=tk.X, pady=5)
+        self.max_head_distance_scale = ttk.Scale(max_head_distance_frame, from_=10, to=200, orient=tk.HORIZONTAL,
+                                                command=lambda x: [setattr(self.temp_settings, 'max_head_distance', int(float(x))),
+                                                                 self.max_head_distance_var.set(str(int(float(x))))])
+        self.max_head_distance_scale.set(self.temp_settings.max_head_distance)
+        self.max_head_distance_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(max_head_distance_frame, textvariable=self.max_head_distance_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
         
         checkbox_frame = ttk.Frame(settings_frame)
         checkbox_frame.pack(fill=tk.X, pady=10)
@@ -219,14 +262,14 @@ class UIManager:
         save_button.pack(side=tk.LEFT, padx=5)
 
         reset_button = ttk.Button(action_buttons_frame, text="Reset to Default", 
-                                command=self._reset_settings)
+                                 command=self._reset_settings)
         reset_button.pack(side=tk.LEFT, padx=5)
 
         app_controls_frame = ttk.Frame(settings_frame)
         app_controls_frame.pack(fill=tk.X, pady=10)
 
         theme_button = ttk.Button(app_controls_frame, text="Toggle Dark-Light Mode", 
-                                command=self._toggle_theme, style="Accent.TButton")
+                                 command=self._toggle_theme, style="Accent.TButton")
         theme_button.pack(side=tk.LEFT, padx=5)
 
         quit_btn = ttk.Button(app_controls_frame, text="Quit", command=self.on_quit)
@@ -244,6 +287,59 @@ class UIManager:
         self.detection_mode_label = ttk.Label(settings_frame, text="", font=self.label_font)
         self.detection_mode_label.pack(pady=5)
         self._update_detection_mode_label()
+
+        # Camera Settings Tab
+        camera_title_label = ttk.Label(camera_settings_frame, text="Camera Settings", font=self.title_font)
+        camera_title_label.pack(pady=10)
+
+        exposure_var = tk.StringVar(value="-8.0")
+        brightness_var = tk.StringVar(value="0.0")
+        contrast_var = tk.StringVar(value="1.0")
+        gamma_var = tk.StringVar(value="1.0")
+        
+        exposure_label = ttk.Label(camera_settings_frame, text="Exposure: Adjusts camera light sensitivity", font=self.label_font)
+        exposure_label.pack(anchor=tk.W)
+        exposure_frame = ttk.Frame(camera_settings_frame)
+        exposure_frame.pack(fill=tk.X, pady=5)
+        exposure_scale = ttk.Scale(exposure_frame, from_=-10, to=10, orient=tk.HORIZONTAL,
+                                  command=lambda x: [self.camera_manager.set_exposure(float(x)),
+                                                   exposure_var.set(f"{float(x):.1f}")])
+        exposure_scale.set(-8.0)
+        exposure_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(exposure_frame, textvariable=exposure_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        brightness_label = ttk.Label(camera_settings_frame, text="Brightness: Adjusts image lightness", font=self.label_font)
+        brightness_label.pack(anchor=tk.W, pady=5)
+        brightness_frame = ttk.Frame(camera_settings_frame)
+        brightness_frame.pack(fill=tk.X, pady=5)
+        brightness_scale = ttk.Scale(brightness_frame, from_=-100, to=100, orient=tk.HORIZONTAL,
+                                    command=lambda x: [self.camera_manager.set_brightness(float(x)),
+                                                     brightness_var.set(f"{float(x):.1f}")])
+        brightness_scale.set(0.0)
+        brightness_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(brightness_frame, textvariable=brightness_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        contrast_label = ttk.Label(camera_settings_frame, text="Contrast: Adjusts image contrast", font=self.label_font)
+        contrast_label.pack(anchor=tk.W, pady=5)
+        contrast_frame = ttk.Frame(camera_settings_frame)
+        contrast_frame.pack(fill=tk.X, pady=5)
+        contrast_scale = ttk.Scale(contrast_frame, from_=0.1, to=3.0, orient=tk.HORIZONTAL,
+                                  command=lambda x: [self.camera_manager.set_contrast(float(x)),
+                                                   contrast_var.set(f"{float(x):.1f}")])
+        contrast_scale.set(1.0)
+        contrast_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(contrast_frame, textvariable=contrast_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        gamma_label = ttk.Label(camera_settings_frame, text="Gamma: Adjusts image gamma correction", font=self.label_font)
+        gamma_label.pack(anchor=tk.W, pady=5)
+        gamma_frame = ttk.Frame(camera_settings_frame)
+        gamma_frame.pack(fill=tk.X, pady=5)
+        gamma_scale = ttk.Scale(gamma_frame, from_=0.1, to=5.0, orient=tk.HORIZONTAL,
+                               command=lambda x: [self.camera_manager.set_gamma(float(x)),
+                                                gamma_var.set(f"{float(x):.1f}")])
+        gamma_scale.set(1.0)
+        gamma_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(gamma_frame, textvariable=gamma_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
 
         # Triggers Tab
         triggers_title = ttk.Label(triggers_frame, text="Triggers calendar", font=self.title_font)
@@ -289,8 +385,26 @@ class UIManager:
         self.stats_graph_manager = StatsGraphManager(self.stats, stats_content_frame)
         
         # Phrases Tab
-        phrases_title = ttk.Label(phrases_frame, text="Motivational Phrases", font=self.title_font)
+        phrases_title = ttk.Label(phrases_frame, text="Motivational Messages", font=self.title_font)
         phrases_title.pack(pady=10)
+        
+        mode_frame = ttk.Frame(phrases_frame)
+        mode_frame.pack(fill=tk.X, pady=5)
+        self.mode_var = tk.StringVar(value="text" if self.audio_manager.use_tts else "audio")
+        ttk.Radiobutton(
+            mode_frame,
+            text="Use Text Phrases (gTTS)",
+            value="text",
+            variable=self.mode_var,
+            command=self._update_phrases_ui
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(
+            mode_frame,
+            text="Use Audio Files (MP3/WAV)",
+            value="audio",
+            variable=self.mode_var,
+            command=self._update_phrases_ui
+        ).pack(side=tk.LEFT, padx=5)
         
         phrases_list_frame = ttk.Frame(phrases_frame)
         phrases_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -302,9 +416,9 @@ class UIManager:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.phrases_listbox.config(yscrollcommand=scrollbar.set)
         
-        if self.audio_manager:
-            for phrase in self.audio_manager.phrases:
-                self.phrases_listbox.insert(tk.END, phrase)
+        if TkinterDnD:
+            self.phrases_listbox.drop_target_register(DND_FILES)
+            self.phrases_listbox.dnd_bind('<<Drop>>', self._handle_drop)
         
         phrase_entry_frame = ttk.Frame(phrases_frame)
         phrase_entry_frame.pack(fill=tk.X, pady=5)
@@ -321,18 +435,76 @@ class UIManager:
         edit_button = ttk.Button(phrases_buttons_frame, text="Edit Phrase", command=self._edit_phrase)
         edit_button.pack(side=tk.LEFT, padx=5)
         
-        delete_button = ttk.Button(phrases_buttons_frame, text="Delete Phrase", command=self._delete_phrase)
+        delete_button = ttk.Button(phrases_buttons_frame, text="Delete Item", command=self._delete_item)
         delete_button.pack(side=tk.LEFT, padx=5)
         
         save_phrases_button = ttk.Button(phrases_buttons_frame, text="Save Phrases", command=self._save_phrases, style="Accent.TButton")
         save_phrases_button.pack(side=tk.LEFT, padx=5)
+        
+        # Audio Settings
+        audio_label = ttk.Label(phrases_frame, text="Audio Settings", font=self.under_title_font, style="TLabel")
+        audio_label.pack(anchor=tk.W, pady=10)
+        
+        cache_limit_label = ttk.Label(phrases_frame, text="TTS Cache Limit (MB): Max size for cached audio", font=self.label_font)
+        cache_limit_label.pack(anchor=tk.W, pady=5)
+        cache_limit_frame = ttk.Frame(phrases_frame)
+        cache_limit_frame.pack(fill=tk.X, pady=5)
+        self.cache_limit_scale = ttk.Scale(cache_limit_frame, from_=10, to=1000, orient=tk.HORIZONTAL,
+                                          command=lambda x: [setattr(self.temp_settings, 'tts_cache_limit', float(x)),
+                                                           self.cache_limit_var.set(f"{float(x):.1f}")])
+        self.cache_limit_scale.set(self.temp_settings.tts_cache_limit)
+        self.cache_limit_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(cache_limit_frame, textvariable=self.cache_limit_var, width=5, font=self.label_font).pack(side=tk.RIGHT, padx=5)
+        
+        self._update_phrases_ui()
         
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.bind("<Configure>", self._on_resize)
         self._update_detection_mode_label()
         self._update_layout()
     
+    def _handle_drop(self, event) -> None:
+        if self.mode_var.get() != "audio":
+            messagebox.showwarning("Invalid Mode", "Switch to 'Use Audio Files' mode to drop audio files.")
+            return
+        files = self.root.splitlist(event.data)
+        valid_extensions = ('.mp3', '.wav')
+        for file_path in files:
+            if file_path.lower().endswith(valid_extensions):
+                try:
+                    filename = os.path.basename(file_path)
+                    dest_path = ResourceManager.get_resource_path(os.path.join(self.audio_manager.stock_audio_folder, filename))
+                    shutil.copy(file_path, dest_path)
+                    self.phrases_listbox.insert(tk.END, filename)
+                    self.status_label.config(text=f"Added audio file: {filename}")
+                    self.audio_manager.reload_audio_files()
+                except Exception as e:
+                    logging.error(f"Error copying audio file {file_path}: {e}")
+                    messagebox.showerror("Error", f"Failed to add {filename}: {e}")
+            else:
+                messagebox.showwarning("Invalid File", f"Only MP3 and WAV files are supported: {file_path}")
+    
+    def _update_phrases_ui(self) -> None:
+        mode = self.mode_var.get()
+        self.phrases_listbox.delete(0, tk.END)
+        self.audio_manager.set_mode(mode == "text")
+        
+        if mode == "text":
+            self.phrase_entry.config(state='normal')
+            if self.audio_manager:
+                for phrase in self.audio_manager.phrases:
+                    self.phrases_listbox.insert(tk.END, phrase)
+        else:
+            self.phrase_entry.config(state='disabled')
+            if self.audio_manager:
+                for audio_file in self.audio_manager.audio_files:
+                    self.phrases_listbox.insert(tk.END, os.path.basename(audio_file))
+        self.status_label.config(text=f"Switched to {'Text Phrases' if mode == 'text' else 'Audio Files'} mode")
+    
     def _add_phrase(self) -> None:
+        if self.mode_var.get() != "text":
+            messagebox.showwarning("Invalid Mode", "Adding phrases is only available in Text Phrases mode.")
+            return
         phrase = self.phrase_entry.get().strip()
         if not phrase:
             messagebox.showwarning("Invalid Input", "Please enter a non-empty phrase.")
@@ -342,6 +514,9 @@ class UIManager:
         self.status_label.config(text="Phrase added")
     
     def _edit_phrase(self) -> None:
+        if self.mode_var.get() != "text":
+            messagebox.showwarning("Invalid Mode", "Editing phrases is only available in Text Phrases mode.")
+            return
         selection = self.phrases_listbox.curselection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a phrase to edit.")
@@ -356,17 +531,36 @@ class UIManager:
         self.phrase_entry.delete(0, tk.END)
         self.status_label.config(text="Phrase edited")
     
-    def _delete_phrase(self) -> None:
+    def _delete_item(self) -> None:
         selection = self.phrases_listbox.curselection()
         if not selection:
-            messagebox.showwarning("No Selection", "Please select a phrase to delete.")
+            messagebox.showwarning("No Selection", "Please select an item to delete.")
             return
         index = selection[0]
-        self.phrases_listbox.delete(index)
+        item = self.phrases_listbox.get(index)
+        
+        if self.mode_var.get() == "audio":
+            try:
+                file_path = ResourceManager.get_resource_path(os.path.join(self.audio_manager.stock_audio_folder, item))
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    self.audio_manager.reload_audio_files()
+                    self.phrases_listbox.delete(index)
+                    self.status_label.config(text=f"Deleted audio file: {item}")
+                else:
+                    messagebox.showerror("Error", f"File not found: {item}")
+            except Exception as e:
+                logging.error(f"Error deleting audio file {item}: {e}")
+                messagebox.showerror("Error", f"Failed to delete {item}: {e}")
+        else:
+            self.phrases_listbox.delete(index)
+            self.status_label.config(text="Phrase deleted")
         self.phrase_entry.delete(0, tk.END)
-        self.status_label.config(text="Phrase deleted")
     
     def _save_phrases(self) -> None:
+        if self.mode_var.get() != "text":
+            messagebox.showinfo("No Save Needed", "Audio files are saved automatically when dropped.")
+            return
         phrases = list(self.phrases_listbox.get(0, tk.END))
         if not phrases:
             messagebox.showwarning("No Phrases", "At least one phrase is required.")
@@ -399,10 +593,54 @@ class UIManager:
         self.config.detection['pull_threshold'] = self.temp_settings.pull_threshold
         self.config.detection['full_head_detection'] = self.full_head_var.get()
         self.config.detection['show_meshes'] = self.show_meshes_var.get()
+        self.config.detection['max_head_distance'] = self.temp_settings.max_head_distance
+        self.config.audio['tts_cache_limit'] = self.temp_settings.tts_cache_limit
+        if self.audio_manager:
+            self.audio_manager._enforce_cache_limit()
         self.status_label.config(text="Settings saved")
     
     def _reset_settings(self) -> None:
         self.on_reset()
+        
+        # Update temp_settings with default values from config
+        self.temp_settings.trigger_cooldown = self.config.detection['trigger_cooldown']
+        self.temp_settings.required_duration = self.config.detection['required_duration']
+        self.temp_settings.pull_threshold = self.config.detection['pull_threshold']
+        self.temp_settings.full_head_detection = self.config.detection['full_head_detection']
+        self.temp_settings.show_meshes = self.config.detection['show_meshes']
+        self.temp_settings.max_head_distance = self.config.detection['max_head_distance']
+        self.temp_settings.tts_cache_limit = self.config.audio['tts_cache_limit']
+        
+        # Update sliders
+        if self.cooldown_scale:
+            self.cooldown_scale.set(self.temp_settings.trigger_cooldown)
+            self.cooldown_var.set(str(self.temp_settings.trigger_cooldown))
+        if self.duration_scale:
+            self.duration_scale.set(self.temp_settings.required_duration)
+            self.duration_var.set(f"{self.temp_settings.required_duration:.1f}")
+        if self.threshold_scale:
+            self.threshold_scale.set(self.temp_settings.pull_threshold)
+            self.threshold_var.set(str(self.temp_settings.pull_threshold))
+        if self.cache_limit_scale:
+            self.cache_limit_scale.set(self.temp_settings.tts_cache_limit)
+            self.cache_limit_var.set(f"{self.temp_settings.tts_cache_limit:.1f}")
+        if self.max_head_distance_scale:
+            self.max_head_distance_scale.set(self.temp_settings.max_head_distance)
+            self.max_head_distance_var.set(str(self.temp_settings.max_head_distance))
+        
+        # Update checkboxes
+        if self.full_head_var:
+            self.full_head_var.set(self.temp_settings.full_head_detection)
+        if self.show_meshes_var:
+            self.show_meshes_var.set(self.temp_settings.show_meshes)
+        
+        # Update detection mode label
+        self._update_detection_mode_label()
+        
+        # Enforce cache limit if audio_manager is available
+        if self.audio_manager:
+            self.audio_manager._enforce_cache_limit()
+        
         self.status_label.config(text="Settings reset to default")
     
     def _update_trigger_display(self, event=None) -> None:
@@ -418,16 +656,10 @@ class UIManager:
         self.tabs_frame.configure(width=tabs_width)
     
     def _on_resize(self, event=None) -> None:
-        """Handle resize events with debouncing."""
         if event.widget == self.root:
-            # Cancel any previously scheduled resize
-            if self._resize_after_id is not None:
-                self.root.after_cancel(self._resize_after_id)
-            # Schedule new resize after 100ms delay
-            self._resize_after_id = self.root.after(100, self._perform_resize, event)
+            self._perform_resize(event)
     
     def _perform_resize(self, event=None) -> None:
-        """Perform the actual resize operations."""
         if event.widget == self.root:
             width, height = self.root.winfo_width(), self.root.winfo_height()
             title_size = max(int(height / 60), 12)
@@ -446,7 +678,6 @@ class UIManager:
                 container_height = self.video_height + 30
             self.video_container.configure(width=container_width, height=container_height)
             self._update_layout()
-            self._resize_after_id = None  # Clear the ID after execution
     
     def show_camera_error(self) -> None:
         self.placeholder_label.pack_forget()
@@ -487,6 +718,13 @@ class UIManager:
                 self.retry_button.pack_forget()
                 self.video_label.pack()
                 self.video_container.configure(width=photo.width() + 20, height=photo.height() + 30)
+                if not self._exposure_set:
+                    try:
+                        self.camera_manager.set_exposure(-8.0)
+                        self._exposure_set = True
+                        logging.info("Exposure set to -8.0 after camera initialization")
+                    except Exception as e:
+                        logging.error(f"Failed to set exposure after initialization: {e}")
         except Exception as e:
             logging.error(f"Error updating frame: {e}")
     

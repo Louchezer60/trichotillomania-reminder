@@ -45,14 +45,16 @@ class HairPullingDetector:
         self.audio_manager = AudioManager(
             audio_folder=self.audio_folder,
             stock_audio_folder=self.stock_audio_folder,
-            use_tts=bool(len(os.listdir(self.stock_audio_folder)) == 0)
+            use_tts=bool(len(os.listdir(self.stock_audio_folder)) == 0),
+            config=self.config
         )
         self.ui_manager = UIManager(
             config=self.config,
             stats=self.stats,
             on_quit=self.cleanup,
             on_reset=self.reset_config,
-            audio_manager=self.audio_manager  # Pass AudioManager to UIManager
+            audio_manager=self.audio_manager,
+            camera_manager=self.camera_manager
         )
         self.ui_manager._on_retry_camera = self._retry_camera
         
@@ -61,19 +63,53 @@ class HairPullingDetector:
         self.last_fps_update = time.time()
         self.running = False
         self.detection_thread = None
+        
+        self.contact_points = []
+        self.above_eye_points = []
     
     def reset_config(self) -> None:
         config_manager = ConfigManager()
         config_manager.reset_to_default()
-        self.config = config_manager.config
+        self.config = config_manager.load_config()  # Reload default config
+        
+        # Update UIManager's temp_settings and UI elements
         self.ui_manager.temp_settings.trigger_cooldown = self.config.detection['trigger_cooldown']
         self.ui_manager.temp_settings.required_duration = self.config.detection['required_duration']
         self.ui_manager.temp_settings.pull_threshold = self.config.detection['pull_threshold']
         self.ui_manager.temp_settings.full_head_detection = self.config.detection['full_head_detection']
         self.ui_manager.temp_settings.show_meshes = self.config.detection['show_meshes']
-        self.ui_manager.full_head_var.set(self.config.detection['full_head_detection'])
-        self.ui_manager.show_meshes_var.set(self.config.detection['show_meshes'])
+        self.ui_manager.temp_settings.tts_cache_limit = self.config.audio['tts_cache_limit']
+        self.ui_manager.temp_settings.max_head_distance = self.config.detection['max_head_distance']
+        
+        # Update UI elements
+        if self.ui_manager.cooldown_scale:
+            self.ui_manager.cooldown_scale.set(self.config.detection['trigger_cooldown'])
+            self.ui_manager.cooldown_var.set(str(self.config.detection['trigger_cooldown']))
+        if self.ui_manager.duration_scale:
+            self.ui_manager.duration_scale.set(self.config.detection['required_duration'])
+            self.ui_manager.duration_var.set(f"{self.config.detection['required_duration']:.1f}")
+        if self.ui_manager.threshold_scale:
+            self.ui_manager.threshold_scale.set(self.config.detection['pull_threshold'])
+            self.ui_manager.threshold_var.set(str(self.config.detection['pull_threshold']))
+        if self.ui_manager.cache_limit_scale:
+            self.ui_manager.cache_limit_scale.set(self.config.audio['tts_cache_limit'])
+            self.ui_manager.cache_limit_var.set(f"{self.config.audio['tts_cache_limit']:.1f}")
+        if self.ui_manager.max_head_distance_scale:
+            self.ui_manager.max_head_distance_scale.set(self.config.detection['max_head_distance'])
+            self.ui_manager.max_head_distance_var.set(str(self.config.detection['max_head_distance']))
+        
+        if self.ui_manager.full_head_var:
+            self.ui_manager.full_head_var.set(self.config.detection['full_head_detection'])
+        if self.ui_manager.show_meshes_var:
+            self.ui_manager.show_meshes_var.set(self.config.detection['show_meshes'])
+        
         self.ui_manager._update_detection_mode_label()
+        
+        # Enforce cache limit
+        if self.audio_manager:
+            self.audio_manager._enforce_cache_limit()
+        
+        logging.info("Configuration reset to default")
     
     def _calculate_fps(self) -> float:
         current_time = time.time()
@@ -92,51 +128,94 @@ class HairPullingDetector:
     def _hand_near_head(self, hand_results: Any, face_results: Any) -> bool:
         if not hand_results.multi_hand_landmarks or not face_results or not face_results.multi_face_landmarks:
             return False
-            
+        
         face_landmarks = face_results.multi_face_landmarks[0]
         h, w, _ = self.current_frame.shape
         
-        right_eye_y = int(face_landmarks.landmark[self.gesture_detector.RIGHT_EYE].y * h)
-        left_eye_y = int(face_landmarks.landmark[self.gesture_detector.LEFT_EYE].y * h)
-        eye_level = min(right_eye_y, left_eye_y)
+        # Calculate eye level
+        right_eye_y = face_landmarks.landmark[self.gesture_detector.RIGHT_EYE].y
+        left_eye_y = face_landmarks.landmark[self.gesture_detector.LEFT_EYE].y
+        eye_level_normalized = min(right_eye_y, left_eye_y) - 0.05
+        eye_level_pixels = int(eye_level_normalized * h)
         
-        regions_of_interest = [
-            self.gesture_detector.RIGHT_EYE,
-            self.gesture_detector.LEFT_EYE,
-            self.gesture_detector.FOREHEAD,
-            self.gesture_detector.CROWN,
-            self.gesture_detector.TEMPLES[0],
-            self.gesture_detector.TEMPLES[1]
-        ]
+        self.contact_points = []
+        self.above_eye_points = []
         
-        if self.config.detection['full_head_detection']:
-            regions_of_interest.extend([
-                self.gesture_detector.CHIN,
-                self.gesture_detector.LEFT_CHEEK,
-                self.gesture_detector.RIGHT_CHEEK,
-                self.gesture_detector.JAW_LEFT,
-                self.gesture_detector.JAW_RIGHT,
-                self.gesture_detector.NOSE_TIP,
-                self.gesture_detector.EYEBROW_LEFT,
-                self.gesture_detector.EYEBROW_RIGHT
-            ])
-        
-        face_points = []
-        for idx in regions_of_interest:
-            x = int(face_landmarks.landmark[idx].x * w)
-            y = int(face_landmarks.landmark[idx].y * h)
-            face_points.append((x, y))
+        # Collect face landmarks above eye level for above-eye detection
+        face_points_above_eye_3d = []
+        for i, lm in enumerate(face_landmarks.landmark):
+            if i % 2 == 0 and lm.y * h <= eye_level_pixels:  # Every 2nd landmark above eye level
+                x = lm.x * w
+                y = lm.y * h
+                z = lm.z * w
+                face_points_above_eye_3d.append((x, y, z, i))
         
         for hand_landmarks in hand_results.multi_hand_landmarks:
-            for landmark in hand_landmarks.landmark:
-                hand_x, hand_y = int(landmark.x * w), int(landmark.y * h)
-                if not self.config.detection['full_head_detection'] and hand_y > eye_level:
-                    continue
-                for face_x, face_y in face_points:
-                    distance = np.sqrt((hand_x - face_x)**2 + (hand_y - face_y)**2)
-                    if distance < self.config.detection['max_head_distance']:
-                        return True
+            # Collect hand landmarks above eye level
+            above_eye_landmarks = []
+            for lm in hand_landmarks.landmark:
+                hand_x = lm.x * w
+                hand_y = lm.y * h
+                hand_z = lm.z * w
+                if hand_y <= eye_level_pixels:
+                    above_eye_landmarks.append((hand_x, hand_y, hand_z))
+            
+            if self.config.detection['full_head_detection']:
+                # Full head detection: Check for contact with any face landmark
+                face_points_3d = []
+                for i, lm in enumerate(face_landmarks.landmark):
+                    if i % 2 == 0:  # Use every 2nd landmark for denser coverage
+                        x = lm.x * w
+                        y = lm.y * h
+                        z = lm.z * w
+                        face_points_3d.append((x, y, z, i))
+                
+                for hand_lm in hand_landmarks.landmark:
+                    hand_x = hand_lm.x * w
+                    hand_y = hand_lm.y * h
+                    hand_z = hand_lm.z * w
+                    hand_point_3d = np.array([hand_x, hand_y, hand_z])
                     
+                    for face_x, face_y, face_z, face_idx in face_points_3d:
+                        face_point_3d = np.array([face_x, face_y, face_z])
+                        distance_3d = np.linalg.norm(hand_point_3d - face_point_3d)
+                        if distance_3d < 20.0:
+                            self.contact_points.append((int(hand_x), int(hand_y)))
+                            logging.debug(f"Contact detected: hand at ({hand_x:.1f}, {hand_y:.1f}, {hand_z:.3f}), "
+                                        f"face landmark {face_idx}, 3D_distance={distance_3d:.2f}, "
+                                        f"contact_threshold=20.0")
+                            return True
+                
+                # Check for above-eye detection
+                if len(above_eye_landmarks) >= 3:
+                    for hand_x, hand_y, hand_z in above_eye_landmarks:
+                        hand_point_3d = np.array([hand_x, hand_y, hand_z])
+                        for face_x, face_y, face_z, face_idx in face_points_above_eye_3d:
+                            face_point_3d = np.array([face_x, face_y, face_z])
+                            distance_3d = np.linalg.norm(hand_point_3d - face_point_3d)
+                            if distance_3d < self.config.detection['max_head_distance']:
+                                self.above_eye_points.append((int(hand_x), int(hand_y)))
+                                logging.debug(f"Above-eye trigger: {len(above_eye_landmarks)} hand landmarks above eye_level={eye_level_pixels}, "
+                                            f"hand at ({hand_x:.1f}, {hand_y:.1f}, {hand_z:.3f}), "
+                                            f"face landmark {face_idx}, 3D_distance={distance_3d:.2f}, "
+                                            f"proximity_threshold={self.config.detection['max_head_distance']}")
+                                return True
+            else:
+                # Non-full head detection: Check only above-eye detection
+                if len(above_eye_landmarks) >= 3:
+                    for hand_x, hand_y, hand_z in above_eye_landmarks:
+                        hand_point_3d = np.array([hand_x, hand_y, hand_z])
+                        for face_x, face_y, face_z, face_idx in face_points_above_eye_3d:
+                            face_point_3d = np.array([face_x, face_y, face_z])
+                            distance_3d = np.linalg.norm(hand_point_3d - face_point_3d)
+                            if distance_3d < self.config.detection['max_head_distance']:
+                                self.above_eye_points.append((int(hand_x), int(hand_y)))
+                                logging.debug(f"Above-eye trigger: {len(above_eye_landmarks)} hand landmarks above eye_level={eye_level_pixels}, "
+                                            f"hand at ({hand_x:.1f}, {hand_y:.1f}, {hand_z:.3f}), "
+                                            f"face landmark {face_idx}, 3D_distance={distance_3d:.2f}, "
+                                            f"proximity_threshold={self.config.detection['max_head_distance']}")
+                                return True
+        
         return False
     
     def _check_for_pulling(self, hand_results: Any, face_results: Any) -> None:
