@@ -70,7 +70,7 @@ The updated version of Trichotillomania Reminder introduces significant enhancem
   - Microphone/speakers for audio feedback.
   - At least 4GB RAM and a modern CPU for real-time processing.
 - **Software**:
-  - Python 3.8+ (via Anaconda).
+  - Python 3.8+ (via Anaconda or your prefered distribution).
   - Conda environment named "tricho" (for example) with required packages (see [Installation](#installation)).
 - **Dependencies** (installed in Conda environment):
   - `opencv-python`: For webcam capture and image processing.
