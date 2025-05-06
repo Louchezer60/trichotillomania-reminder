@@ -1,7 +1,7 @@
 # Trichotillomania Reminder
 
 <video width="640" height="360" controls>
-  <source src="assets/demo.gif" type="video/mp4">
+  <source src="static/demo.gif" type="gif">
   Your browser does not support the gif tag. View a screenshot below.
 </video>
 
